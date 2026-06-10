@@ -1,0 +1,28 @@
+# Bazel build artifacts
+bazel-*
+
+# Python build and environment files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+dist/
+*.egg-info/
+build/
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Editor and IDE configurations
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Generated proto stubs
+*_pb2.py
+*_pb2_grpc.py

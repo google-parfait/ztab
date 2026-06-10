@@ -1,0 +1,3 @@
+# Don't send bazel cache to Docker daemon.
+bazel-*
+.git

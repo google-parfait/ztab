@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package ztab;
+
+option java_multiple_files = true;
+option java_package = "com.google.ztab";
+option java_outer_classname = "SessionManagerProto";
+
+service AgentBrokerService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 2;
+}

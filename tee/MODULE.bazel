@@ -3,9 +3,168 @@ module(
     version = "0.0.1",
 )
 
-bazel_dep(name = "abseil-cpp", version = "20250127.1", repo_name = "com_google_absl")
-bazel_dep(name = "rules_cc", version = "0.1.1")
+single_version_override(
+    module_name = "rules_python",
+    version = "1.5.4",
+)
+
+# --- Core deps (versions aligned with CFC containers/gcp) ---
+bazel_dep(name = "abseil-cpp", version = "20250814.0", repo_name = "com_google_absl")
+bazel_dep(name = "rules_cc", version = "0.2.0")
 bazel_dep(name = "rules_proto", version = "7.1.0")
-bazel_dep(name = "protobuf", version = "29.3", repo_name = "com_google_protobuf")
-bazel_dep(name = "grpc", version = "1.71.0", repo_name = "com_github_grpc_grpc")
-bazel_dep(name = "boringssl", version = "0.20250212.0")
+bazel_dep(name = "protobuf", version = "33.0-rc2", repo_name = "com_google_protobuf")
+bazel_dep(name = "grpc", version = "1.78.0", repo_name = "com_github_grpc_grpc")
+bazel_dep(name = "boringssl", version = "0.20260211.0")
+bazel_dep(name = "curl", version = "8.11.0")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "rules_cuda")
+bazel_dep(name = "toolchains_llvm", version = "1.4.0")
+bazel_dep(name = "rules_python", version = "1.5.4")
+
+# --- OCI image packaging (for Dockerfile-less builds) ---
+bazel_dep(name = "rules_oci", version = "2.2.6")
+bazel_dep(name = "rules_pkg", version = "1.1.0")
+bazel_dep(name = "rules_distroless", version = "0.5.1")
+bazel_dep(name = "aspect_bazel_lib", version = "2.9.4")
+
+# --- llama.cpp — b8875 release (2026-04-21), adds Gemma 4 architecture support ---
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "llama_cpp",
+    build_file = "//third_party/llama_cpp:llama_cpp.BUILD.bzl",
+    strip_prefix = "llama.cpp-98d2d2884e28ca8718774caad691ddd525f2f7b2",
+    url = "https://github.com/ggml-org/llama.cpp/archive/98d2d2884e28ca8718774caad691ddd525f2f7b2.tar.gz",
+)
+
+# --- rules_cuda ---
+archive_override(
+    module_name = "rules_cuda",
+    integrity = "sha256-1p+wq8uTeO1ZELmj03RqR9cKwpuK+idfkTrF4ZehfBw=",
+    strip_prefix = "rules_cuda-76cb0a6afbe814d4da3cc50b9117c64272db4c44",
+    url = "https://github.com/bazel-contrib/rules_cuda/archive/76cb0a6afbe814d4da3cc50b9117c64272db4c44.tar.gz",
+)
+
+# --- Hermetic LLVM toolchain + sysroot ---
+# This avoids the nvcc + system-clang + libstdc++ header incompatibility.
+# clang version lower than 19.1.0 requires libtinfo.so.5 when building CUDA.
+http_archive(
+    name = "sysroot",
+    sha256 = "86ccf9ea2360237ecad01633a86d566ed16e137daf986320ef91ec295ea5f679",
+    url = "https://github.com/google-parfait/confidential-federated-compute/releases/download/sysroot-20260311/sysroot.tar.xz",
+)
+
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm", dev_dependency = True)
+llvm.toolchain(
+    name = "llvm_toolchain",
+    llvm_version = "19.1.0",
+    stdlib = {"linux-x86_64": "stdc++"},
+)
+llvm.sysroot(
+    name = "llvm_toolchain",
+    label = "@sysroot",
+    targets = ["linux-x86_64"],
+)
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")
+
+# --- Distroless base image for OCI containers ---
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci.pull(
+    name = "distroless_cc_debian12_base",
+    digest = "sha256:6714977f9f02632c31377650c15d89a7efaebf43bab0f37c712c30fc01edb973",
+    image = "gcr.io/distroless/cc-debian12",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "distroless_cc_debian12_base", "distroless_cc_debian12_base_linux_amd64")
+
+# --- Model weights (downloaded from GCS at analysis time, cached by Bazel) ---
+# REQUIRED: Set your GCS bucket via --repo_env=GCS_MODEL_BUCKET=gs://your-bucket
+# Example: bazelisk build --repo_env=GCS_MODEL_BUCKET=gs://my-bucket :model_layer_gemma4_e4b
+gcs_file = use_repo_rule("//:repo_rules.bzl", "gcs_file")
+
+gcs_file(
+    name = "gemma4_e2b_weights",
+    downloaded_file_path = "gemma-4-E2B_q4_0-it.gguf",
+    gcs_url = "gs://MODEL_BUCKET_NOT_SET/gemma-4-E2B_q4_0-it.gguf",
+)
+
+gcs_file(
+    name = "gemma4_e4b_weights",
+    downloaded_file_path = "gemma-4-E4B-it-Q4_K_M.gguf",
+    gcs_url = "gs://MODEL_BUCKET_NOT_SET/gemma-4-E4B-it-Q4_K_M.gguf",
+)
+
+gcs_file(
+    name = "gemma4_31b_weights",
+    downloaded_file_path = "gemma-4-31B-it-Q4_K_M.gguf",
+    gcs_url = "gs://MODEL_BUCKET_NOT_SET/gemma-4-31B-it-Q4_K_M.gguf",
+)
+
+# --- CUDA 12.2 toolkit ---
+cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
+
+cuda.component(
+    name = "cuda_cccl",
+    component_name = "cccl",
+    strip_prefix = "cuda_cccl-linux-x86_64-12.2.140-archive",
+    urls = ["https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.2.140-archive.tar.xz"],
+)
+cuda.component(
+    name = "cuda_cudart",
+    component_name = "cudart",
+    strip_prefix = "cuda_cudart-linux-x86_64-12.2.140-archive",
+    urls = ["https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.2.140-archive.tar.xz"],
+)
+cuda.component(
+    name = "cuda_nvcc",
+    component_name = "nvcc",
+    strip_prefix = "cuda_nvcc-linux-x86_64-12.2.140-archive",
+    urls = ["https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.2.140-archive.tar.xz"],
+)
+cuda.component(
+    name = "cuda_cublas",
+    component_name = "cublas",
+    strip_prefix = "libcublas-linux-x86_64-12.2.5.6-archive",
+    urls = ["https://developer.download.nvidia.com/compute/cuda/redist/libcublas/linux-x86_64/libcublas-linux-x86_64-12.2.5.6-archive.tar.xz"],
+)
+cuda.component(
+    name = "cuda_curand",
+    component_name = "curand",
+    strip_prefix = "libcurand-linux-x86_64-10.3.3.141-archive",
+    urls = ["https://developer.download.nvidia.com/compute/cuda/redist/libcurand/linux-x86_64/libcurand-linux-x86_64-10.3.3.141-archive.tar.xz"],
+)
+cuda.toolkit(
+    name = "cuda",
+    components_mapping = {
+        "cccl": "@cuda_cccl",
+        "cudart": "@cuda_cudart",
+        "nvcc": "@cuda_nvcc",
+        "cublas": "@cuda_cublas",
+        "curand": "@cuda_curand",
+    },
+    version = "12.2.2",
+)
+use_repo(
+    cuda,
+    "cuda",
+    "cuda_cccl",
+    "cuda_cublas",
+    "cuda_cudart",
+    "cuda_curand",
+    "cuda_nvcc",
+)
+
+http_archive(
+    name = "nvidia_driver",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+package(default_visibility = ["//visibility:public"])
+cc_library(
+    name = "cuda_libs",
+    srcs = glob(["lib/libcuda.so*"]),
+)
+""",
+    strip_prefix = "nvidia_driver-linux-x86_64-535.161.07-archive",
+    urls = ["https://developer.download.nvidia.com/compute/nvidia-driver/redist/nvidia_driver/linux-x86_64/nvidia_driver-linux-x86_64-535.161.07-archive.tar.xz"],
+)

@@ -36,6 +36,16 @@ def main():
         print(f"ERROR: Proto file not found: {PROTO_FILE}", file=sys.stderr)
         sys.exit(1)
 
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # Design Decision: While pb2/__init__.py is checked into the repository making
+    # this generation technically redundant, it serves as an intentional safety fallback
+    # in case the directory is ever cleared or ignored locally during development.
+    init_file = os.path.join(OUTPUT_DIR, "__init__.py")
+    if not os.path.exists(init_file):
+        with open(init_file, "w") as f:
+            f.write("# Auto-generated package marker.\n")
+
     cmd = [
         sys.executable,
         "-m",

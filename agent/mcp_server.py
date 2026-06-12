@@ -54,7 +54,8 @@ TOOLS = [
         "description": (
             "Connect to a ZTAB TEE server, verify its TLS certificate, "
             "extract and parse the remote attestation token (JWT), and "
-            "make a secure gRPC Echo RPC call to verify the channel."
+            "make a secure gRPC Echo RPC call to verify the channel. "
+            "Use verifier='ita' when connecting to a real GCP TEE."
         ),
         "inputSchema": {
             "type": "object",
@@ -70,6 +71,19 @@ TOOLS = [
                 "message": {
                     "type": "string",
                     "description": "Test message to send via Echo RPC",
+                },
+                "verifier": {
+                    "type": "string",
+                    "description": "Attestation verifier: 'noop' (default) or 'ita'",
+                    "enum": ["noop", "ita"],
+                },
+                "expected_digest": {
+                    "type": "string",
+                    "description": "Expected container image digest (sha256:...). Only used with verifier='ita'.",
+                },
+                "allow_debug_tee": {
+                    "type": "boolean",
+                    "description": "If true, allows verification to succeed even if the TEE is running in debug mode.",
                 },
             },
             "required": ["host", "port", "message"],
@@ -92,9 +106,17 @@ def decode_jwt_payload(token: str) -> dict | None:
         return None
 
 
-def run_connectivity_test(host: str, port: int, message: str) -> dict:
+from verifier_factory import get_verifier as _get_verifier
+
+
+def run_connectivity_test(
+    host: str, port: int, message: str,
+    verifier_name: str = "noop", expected_digest: str = None,
+    allow_debug: bool = False,
+) -> dict:
     """Connects to server, extracts attestation, runs Echo RPC."""
-    channel_wrapper = ZtabChannel(host=host, port=port, verifier=noop_verifier)
+    verifier = _get_verifier(verifier_name, expected_digest, allow_debug)
+    channel_wrapper = ZtabChannel(host=host, port=port, verifier=verifier)
     try:
         print(f"[ztab] Connecting to {host}:{port}...", file=sys.stderr)
         grpc_channel = channel_wrapper.connect()
@@ -152,7 +174,21 @@ def handle_request(method: str, params: dict) -> dict | None:
             host = arguments.get("host", "localhost")
             port = int(arguments.get("port", 8000))
             message = arguments.get("message", "Test")
-            result = run_connectivity_test(host, port, message)
+            verifier_name = arguments.get(
+                "verifier",
+                os.environ.get("ZTAB_VERIFIER", "noop"),
+            )
+            expected_digest = arguments.get(
+                "expected_digest",
+                os.environ.get("ZTAB_EXPECTED_DIGEST"),
+            )
+            allow_debug = arguments.get(
+                "allow_debug_tee",
+                os.environ.get("ZTAB_ALLOW_DEBUG_TEE", "0") == "1",
+            )
+            result = run_connectivity_test(
+                host, port, message, verifier_name, expected_digest, allow_debug
+            )
         else:
             result = {"status": "error", "message": f"Unknown tool: {tool_name}"}
 

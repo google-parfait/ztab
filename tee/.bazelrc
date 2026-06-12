@@ -1,0 +1,33 @@
+# ZTAB Server — Bazel configuration
+#
+# Hermetic LLVM toolchain and CUDA settings for reproducible builds.
+
+# --- rules_python (transitive dep from grpc) ---
+common --@rules_python//python/config_settings:bootstrap_impl=script
+
+# --- C++ Standard ---
+build --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
+build --output_filter='^//'
+
+# --- Hermetic LLVM Toolchain ---
+# Use the hermetic LLVM 19.1.0 toolchain (registered via toolchains_llvm in
+# MODULE.bazel) instead of the system compiler. This avoids incompatibilities
+# between nvcc, system clang, and system libstdc++ headers.
+build --incompatible_enable_cc_toolchain_resolution
+build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1 --incompatible_strict_action_env
+common --repo_env=CC=clang
+
+# --- CUDA ---
+common --@rules_cuda//cuda:compiler=nvcc
+# Static link cuda runtime deps.
+common --@rules_cuda//cuda:runtime=@cuda//:cuda_runtime_static
+# Build for H100 (sm_90).
+# Design Decision: This is intentional. The system MUST run on a Confidential
+# GPU, and H100 is the only architecture we support for this workload at this
+# point in time.
+common --@rules_cuda//cuda:archs=compute_90:compute_90,sm_90
+common --action_env=CUDA_COMPILER_USE_CC_TOOLCHAIN=true
+common --action_env=CUDA_CLANG_LABEL="@llvm_toolchain//:cc-toolchain-x86_64-linux"
+
+# Suppress layering_check for external deps.
+build --features=-layering_check

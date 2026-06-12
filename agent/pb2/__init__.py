@@ -1,1 +1,1 @@
-# Package marker for generated proto stubs.
+# Auto-generated package marker.

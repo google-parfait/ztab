@@ -62,11 +62,27 @@ introduced over time in an incremental fashion.
 
 ```bash
 cd tee
-./run_server.sh 8000      # build and start on port 8000
-./run_server.sh 8000 -d   # detached mode
+./run_server.sh --port 8000                  # build and start on port 8000
+./run_server.sh --port 8000 -d               # detached mode
+./run_server.sh --llm --gcs_bucket gs://your-bucket     # Run with LLM model weights
 ```
 
-### 2. Set up the Python Agent Client
+### 2. Run the TEE Server (GCP Confidential Space)
+
+For end-to-end hardware testing on GCP with H100 GPUs and Intel TDX, see the internal testing guides for building and pushing the Docker image to Artifact Registry. Once pushed, you can launch the node using the provided scripts:
+
+```bash
+# 1. First-time setup (creates Instance Template and Managed Instance Group)
+./scripts/launch_gcp.sh --mode=setup --ita_api_key=YOUR_ITA_KEY
+
+# 2. Request a node (uses Dynamic Workload Scheduler for GPU queuing)
+./scripts/launch_gcp.sh --mode=launch
+
+# 3. Poll until the VM is allocated and get the IP
+./scripts/launch_gcp.sh --mode=get-ip
+```
+
+### 3. Set up the Python Agent Client
 
 ```bash
 cd agent
@@ -74,7 +90,7 @@ pip install -r requirements.txt   # grpcio, grpcio-tools, etc.
 python3 generate_protos.py        # compile proto stubs
 ```
 
-### 3. Verify Connectivity
+### 4. Verify Connectivity
 
 ```bash
 # Raw TLS + attestation extraction (no grpcio needed):

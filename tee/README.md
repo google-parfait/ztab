@@ -42,46 +42,58 @@ proving the key was generated inside a genuine TEE.
 
 | File | Description |
 | :--- | :--- |
-| `main.cc` | Server entry point. Key generation, mock attestation, certificate creation, gRPC startup. Contains `AgentBrokerService` (currently `Echo`). |
+| `main.cc` | Server entry point. Key generation, attestation, certificate creation, gRPC startup. Contains `AgentBrokerService` (Echo + LLM inference). |
 | `tls_cert_generator.h/.cc` | `EphemeralCredentialGenerator` class. EC key generation, public key hashing, X.509 cert with embedded attestation extension. |
+| `llama_engine.h/.cc` | LLM inference engine wrapping llama.cpp. Loads GGUF models and generates completions. |
 | `session_manager.proto` | Protobuf service definition for `AgentBrokerService`. Currently `Echo`; will be extended. |
-| `BUILD` | Bazel build rules for proto, gRPC stubs, TLS cert lib, and server binary. |
-| `MODULE.bazel` | Bazel module definition with external deps (gRPC, Abseil, BoringSSL, Protobuf). |
-| `Dockerfile` | Multi-stage Docker build (Ubuntu 24.04 + Bazelisk → minimal runtime). |
-| `run_server.sh` | Helper to build the Docker image and run the container. |
-| `.bazelversion` | Pins Bazel to 7.6.1 via Bazelisk. |
-| `.dockerignore` | Excludes `bazel-*` and `.git` from Docker context. |
+| `BUILD` | Bazel build rules for proto, gRPC stubs, TLS cert lib, server binary, and OCI image targets. |
+| `MODULE.bazel` | Bazel module definition with external deps and OCI image packaging. |
+| `model_targets.bzl` | Macro generating per-model OCI image targets (local and GCP variants). |
+| `repo_rules.bzl` | `gcs_file` repository rule for downloading model weights from GCS at analysis time. |
+| `build_defs.bzl` | `define_load_runner` genrule for `bazel run` → `docker load` workflow. |
+| `run_server.sh` | Helper to build the OCI image and run the container locally via Docker. |
+| `.bazelversion` | Pins Bazel to 8.2.1 via Bazelisk. |
 
 ## Building
 
-### Via Docker (recommended)
+### OCI Image (recommended for Docker / GCP deployment)
 
-From the repository root:
+The server is packaged as an OCI image using Bazel's `rules_oci`
+(no Dockerfile). The base image is `distroless/cc-debian12`.
 
 ```bash
 cd tee
-./run_server.sh [port]       # default port: 8000
-./run_server.sh 8000 -d      # detached mode
+
+# Echo-only (no model, quick test):
+./run_server.sh
+
+# With LLM (downloads Gemma 4 E2B from your GCS bucket):
+./run_server.sh --llm --gcs_bucket gs://your-model-bucket
+
+# With a specific model:
+./run_server.sh --model gemma4_e4b --gcs_bucket gs://your-model-bucket
+
+# With GPU passthrough:
+./run_server.sh --model gemma4_e4b --gcs_bucket gs://your-model-bucket --gpu
+
+# Custom port, detached:
+./run_server.sh --port 9000 -d
 ```
 
-This builds the server inside a hermetic Docker container using
-Bazelisk and produces a minimal runtime image (~50 MB)
-containing only the static binary and CA certificates.
+Model weights are downloaded from GCS via Bazel's `gcs_file`
+repository rule and cached automatically. The `--gcs_bucket` flag
+is required when using `--llm` or `--model`.
+
+```bash
+bazelisk build --repo_env=GCS_MODEL_BUCKET=gs://your-bucket :model_layer_gemma4_e4b
+```
 
 ### Local Bazel Build (development)
 
-On some Linux distributions with GCC 15+ and binutils 2.45+,
-you may hit a known `.sframe` linker bug. Use Clang as a
-workaround:
-
 ```bash
 cd tee
-CC=clang CXX=clang++ bazel build :ztab_server
+bazelisk build :ztab_server
 ```
-
-Build the specific `:ztab_server` target — do **not** use
-`//...`, as it will attempt to compile external test targets
-that may not be available locally.
 
 The resulting binary is at `bazel-bin/ztab_server`.
 
@@ -98,10 +110,14 @@ All dependencies are fetched automatically by Bazel via
 
 | Dependency | Version | Purpose |
 | :--- | :--- | :--- |
-| gRPC | 1.72.0 | RPC framework and TLS credentials |
-| Abseil | 20250127.1 | Status, logging, string utilities |
-| BoringSSL | (via gRPC) | EC keys, X.509 certs |
-| Protobuf | 30.2 | Proto compilation and runtime |
+| gRPC | 1.78.0 | RPC framework and TLS credentials |
+| Abseil | 20250814.0 | Status, logging, string utilities |
+| BoringSSL | 0.20260211.0 | EC keys, X.509 certs |
+| Protobuf | 33.0-rc2 | Proto compilation and runtime |
+| llama.cpp | b8875 | LLM inference engine (Gemma 4 support) |
+| rules_oci | 2.2.6 | OCI image packaging |
+| rules_pkg | 1.1.0 | `pkg_tar` for image layering |
+| CUDA 12.2 | (optional) | GPU inference via `--//:enable_cuda=true` |
 
 ## Architecture Notes
 

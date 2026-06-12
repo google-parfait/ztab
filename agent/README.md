@@ -75,8 +75,8 @@ On restricted environments where system-level `pip install` is
 not available, use a virtual environment:
 
 ```bash
-python3 -m venv /tmp/ztab-venv
-/tmp/ztab-venv/bin/pip install -r requirements.txt
+python3 -m venv ~/.ztab-venv
+~/.ztab-venv/bin/pip install -r requirements.txt
 ```
 
 ### Compile Proto Stubs
@@ -95,6 +95,12 @@ This generates `pb2/session_manager_pb2.py` and
 
 ```bash
 python3 cli.py --host localhost --port 8000 \
+    --message "Hello ZTAB"
+
+# When testing against debug images with Intel Trust Authority
+python3 cli.py --host <GCP_IP> --port 8000 \
+    --verifier ita \
+    --allow-debug-tee \
     --message "Hello ZTAB"
 ```
 

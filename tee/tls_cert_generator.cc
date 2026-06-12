@@ -31,12 +31,25 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 
+// Implements ephemeral credential generation for RA-TLS (Remote Attestation
+// over TLS). All cryptographic operations use BoringSSL (OpenSSL-compatible)
+// standard primitives:
+//   - EC key generation: NIST P-256 / secp256r1 (FIPS 186-4)
+//   - Key hashing: SHA-256 of SubjectPublicKeyInfo DER (RFC 5280 §4.1.2.7)
+//   - Certificate: X.509v3 self-signed (RFC 5280)
+//   - Extension: Custom OID with ASN.1 OCTET STRING (RFC 5280 §4.2)
+//
+// No bespoke or homegrown cryptography is used anywhere in this file.
+
 namespace ztab {
 namespace {
 
-// Custom OID for the attestation extension.
-// In production this should be a properly registered OID; this placeholder is
-// under the "private enterprise" arc and won't collide with anything real.
+// Custom OID for the attestation token extension, under the IANA private
+// enterprise arc (1.3.6.1.4.1). This follows the same pattern used by other
+// RA-TLS implementations (e.g., Gramine SGX uses 1.3.6.1.4.1.56860.x,
+// Open Enclave uses 1.3.6.1.4.1.311.105.x) which define custom OIDs for
+// embedding attestation evidence in X.509 certificate extensions.
+// TODO: Register a proper OID under Google's PEN arc for production use.
 constexpr char kAttestationOid[] = "1.3.6.1.4.1.99999.1";
 
 using X509_ptr = std::unique_ptr<

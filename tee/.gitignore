@@ -1,0 +1,6 @@
+# Bazel output directories.
+bazel-*
+
+# Model staging directory contents (managed by build scripts).
+# The directory itself and .gitkeep are tracked; .gguf files are not.
+_model/*.gguf

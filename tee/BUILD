@@ -1,9 +1,24 @@
 load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load(":model_targets.bzl", "ztab_model_targets")
 
 package(default_visibility = ["//visibility:public"])
+
+bool_flag(
+    name = "enable_cuda",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "cuda_enabled",
+    flag_values = {":enable_cuda": "True"},
+)
+
 
 # Proto compilation
 proto_library(
@@ -37,18 +52,160 @@ cc_library(
     ],
 )
 
+# Attestation Token Provider Interface (header-only)
+cc_library(
+    name = "attestation_token_provider",
+    hdrs = ["attestation_token_provider.h"],
+    deps = [
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# Base64Url encoding utility (header-only)
+cc_library(
+    name = "encoding_utils",
+    hdrs = ["encoding_utils.h"],
+)
+
+# Mock Attestation Token Provider (local development)
+cc_library(
+    name = "mock_attestation_token_provider",
+    srcs = ["mock_attestation_token_provider.cc"],
+    hdrs = ["mock_attestation_token_provider.h"],
+    deps = [
+        ":attestation_token_provider",
+        ":encoding_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# HTTP Client (libcurl, for GCP attestation agent communication)
+cc_library(
+    name = "http_client",
+    srcs = ["http_client.cc"],
+    hdrs = ["http_client.h"],
+    deps = [
+        "@curl",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# GCP Attestation Token Provider (Confidential Space / ITA)
+cc_library(
+    name = "gcp_attestation_token_provider",
+    srcs = ["gcp_attestation_token_provider.cc"],
+    hdrs = ["gcp_attestation_token_provider.h"],
+    deps = [
+        ":attestation_token_provider",
+        ":http_client",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# LLM Engine (llama.cpp wrapper)
+cc_library(
+    name = "llama_engine",
+    srcs = ["llama_engine.cc"],
+    hdrs = ["llama_engine.h"],
+    deps = [
+        "@llama_cpp//:llama_cpp",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+# TLS Proxy Library
+cc_library(
+    name = "tls_proxy",
+    srcs = ["tls_proxy.cc"],
+    hdrs = ["tls_proxy.h"],
+    deps = [
+        ":attestation_token_provider",
+        ":encoding_utils",
+        ":tls_cert_generator",
+        "@boringssl//:crypto",
+        "@boringssl//:ssl",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/time",
+    ],
+)
+
 # Server Binary
 cc_binary(
     name = "ztab_server",
     srcs = ["main.cc"],
     deps = [
+        ":attestation_token_provider",
+        ":gcp_attestation_token_provider",
+        ":llama_engine",
+        ":mock_attestation_token_provider",
         ":session_manager_cc_grpc",
         ":session_manager_cc_proto",
-        ":tls_cert_generator",
+        ":tls_proxy",
         "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:initialize",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
+)
+
+# --- OCI Image Packaging (Dockerfile-less builds) ---
+
+# Binary layer: packages ztab_server into a tar for OCI image layering.
+pkg_tar(
+    name = "ztab_server_tar",
+    srcs = [":ztab_server"],
+    include_runfiles = True,
+)
+
+# Echo-only image (no model weights — for quick testing).
+oci_image(
+    name = "ztab_server_echo_oci_image",
+    base = "@distroless_cc_debian12_base",
+    cmd = ["--attestation_provider=mock", "--port=8000"],
+    entrypoint = ["/ztab_server"],
+    exposed_ports = ["8000/tcp"],
+    tars = [":ztab_server_tar"],
+)
+
+oci_load(
+    name = "ztab_server_echo_tarball",
+    image = ":ztab_server_echo_oci_image",
+    repo_tags = ["ztab-server-echo:latest"],
+)
+
+# Per-model GCP server container targets.
+# Each call generates: model_layer_{name}, oci_image, oci_load, and load_runner
+# for 2 deployment variants (local, gcp).
+ztab_model_targets(
+    model_name = "gemma4_e2b",
+    weights_filename = "gemma-4-E2B_q4_0-it.gguf",
+    weights_label = "@gemma4_e2b_weights//:gemma-4-E2B_q4_0-it.gguf",
+)
+
+ztab_model_targets(
+    model_name = "gemma4_e4b",
+    weights_filename = "gemma-4-E4B-it-Q4_K_M.gguf",
+    weights_label = "@gemma4_e4b_weights//:gemma-4-E4B-it-Q4_K_M.gguf",
+)
+
+ztab_model_targets(
+    model_name = "gemma4_31b",
+    weights_filename = "gemma-4-31B-it-Q4_K_M.gguf",
+    weights_label = "@gemma4_31b_weights//:gemma-4-31B-it-Q4_K_M.gguf",
 )

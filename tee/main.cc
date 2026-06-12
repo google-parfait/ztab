@@ -12,154 +12,186 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <csignal>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
 
+#include "absl/flags/flag.h"
+#include "absl/flags/parse.h"
 #include "absl/log/initialize.h"
+#include "absl/log/globals.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/strings/str_cat.h"
+#include "attestation_token_provider.h"
+#include "gcp_attestation_token_provider.h"
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/security/server_credentials.h"
+#include "llama_engine.h"
+#include "mock_attestation_token_provider.h"
 #include "session_manager.grpc.pb.h"
-#include "tls_cert_generator.h"
+#include "tls_proxy.h"
+
+ABSL_FLAG(int32_t, port, 8000, "The port on which the server should listen.");
+
+ABSL_FLAG(std::string, attestation_provider, "mock",
+          "Which attestation provider to use: 'mock' for local development "
+          "(unsigned JWT), or 'ita' for real Intel Trust Authority attestation "
+          "via the GCP Confidential Space agent.");
+
+ABSL_FLAG(std::string, model_path, "",
+          "Path to a GGUF model file. If empty, the server runs without LLM "
+          "support and Echo just echoes the input.");
+
+ABSL_FLAG(int32_t, gpu_layers, 0,
+          "Number of model layers to offload to GPU. Use 999 for full "
+          "offload (e.g., on H100). Default: 0 (CPU only).");
+
+ABSL_FLAG(int32_t, local_port, 8001,
+          "Port for the local insecure gRPC server on loopback (127.0.0.1). "
+          "This port is not accessible from outside the container.");
+
+
 
 namespace ztab {
 namespace {
 
-// Minimal Base64Url encoder (no padding).
-std::string Base64UrlEncode(const std::string& input) {
-  static const char alphabet[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-  std::string result;
-  result.reserve((input.size() + 2) / 3 * 4);
-  int val = 0;
-  int valb = -6;
-  for (unsigned char c : input) {
-    val = (val << 8) + c;
-    valb += 8;
-    while (valb >= 0) {
-      result.push_back(alphabet[(val >> valb) & 0x3F]);
-      valb -= 6;
-    }
-  }
-  if (valb > -6) {
-    result.push_back(alphabet[((val << 8) >> (valb + 8)) & 0x3F]);
-  }
-  return result;
-}
 
-// Generates a mock attestation token (unsigned JWT) that binds the given
-// public key hash via the eat_nonce claim.  In production this is fetched
-// from the GCP Confidential Computing metadata endpoint.
-std::string GenerateMockAttestationToken(const std::string& key_hash) {
-  // Header: {"alg":"none","typ":"JWT"}
-  const std::string header_b64 = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0";
-
-  std::string nonce_b64 = Base64UrlEncode(key_hash);
-
-  std::string payload_json = absl::StrCat(
-      "{\n"
-      "  \"iss\": \"https://confidentialcomputing.googleapis.com\",\n"
-      "  \"aud\": \"ztab_tls\",\n"
-      "  \"dbgstat\": \"disabled-since-boot\",\n"
-      "  \"secboot\": true,\n"
-      "  \"hwmodel\": \"GCP_INTEL_TDX\",\n"
-      "  \"submods\": {\n"
-      "    \"container\": {\n"
-      "      \"image_digest\": "
-      "\"sha256:0000000000000000000000000000000000000000000000000000000000000"
-      "000\"\n"
-      "    }\n"
-      "  },\n"
-      "  \"eat_nonce\": \"",
-      nonce_b64,
-      "\"\n"
-      "}");
-
-  std::string payload_b64 = Base64UrlEncode(payload_json);
-
-  // JWT = header.payload.signature  (signature empty for alg=none)
-  return absl::StrCat(header_b64, ".", payload_b64, ".");
-}
-
-// Trivial Echo implementation.
+// Echo implementation with optional LLM support.
+//
+// If a LlamaEngine is provided, Echo treats the incoming message as a prompt
+// and returns the LLM's generation. Otherwise, it simply echoes the input.
 class AgentBrokerServiceImpl final : public AgentBrokerService::Service {
  public:
+  explicit AgentBrokerServiceImpl(LlamaEngine* engine) : engine_(engine) {}
+
   grpc::Status Echo(grpc::ServerContext* context, const EchoRequest* request,
                     EchoResponse* response) override {
     LOG(INFO) << "Received Echo request: " << request->message();
-    response->set_message(absl::StrCat("Echo: ", request->message()));
+
+    if (engine_ != nullptr) {
+      // LLM mode: treat the message as a prompt.
+      LOG(INFO) << "Running LLM inference...";
+      absl::Time infer_start = absl::Now();
+      auto result = engine_->Generate(request->message());
+      absl::Duration infer_elapsed = absl::Now() - infer_start;
+      if (!result.ok()) {
+        LOG(ERROR) << "LLM generation failed: " << result.status().ToString();
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                            result.status().ToString());
+      }
+      response->set_message(*result);
+      LOG(INFO) << "LLM generation complete (" << result->size()
+                << " bytes) in " << absl::FormatDuration(infer_elapsed)
+                << " (wall time).";
+    } else {
+      // Simple echo mode (no model loaded).
+      response->set_message(absl::StrCat("Echo: ", request->message()));
+    }
+
     return grpc::Status::OK;
   }
+
+ private:
+  LlamaEngine* engine_;       // Not owned.
 };
 
-void RunServer(const std::string& port) {
+volatile sig_atomic_t g_shutdown_requested = 0;
+
+void RunServer() {
   absl::InitializeLog();
+  absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
 
-  LOG(INFO) << "Generating ephemeral RA-TLS credentials...";
+  // --- LLM Engine (optional) ---
+  std::unique_ptr<LlamaEngine> engine;
+  std::string model_path = absl::GetFlag(FLAGS_model_path);
+  if (!model_path.empty()) {
+    int gpu_layers = absl::GetFlag(FLAGS_gpu_layers);
+    LOG(INFO) << "Loading LLM model from " << model_path
+              << " (gpu_layers=" << gpu_layers << ")...";
+    absl::Time load_start = absl::Now();
+    auto engine_or = CreateLlamaEngine(model_path, gpu_layers);
+    if (!engine_or.ok()) {
+      LOG(ERROR) << "Failed to load LLM: " << engine_or.status().ToString();
+      return;
+    }
+    engine = std::move(*engine_or);
+    absl::Duration load_elapsed = absl::Now() - load_start;
+    LOG(INFO) << "LLM model loaded successfully in "
+              << absl::FormatDuration(load_elapsed) << ".";
+  } else {
+    LOG(INFO) << "No --model_path specified; running in echo-only mode.";
+  }
 
-  // 1. Generate ephemeral key and get the public key hash.
-  EphemeralCredentialGenerator generator;
-  absl::StatusOr<std::string> hash_or = generator.GenerateKeyAndGetHash();
-  if (!hash_or.ok()) {
-    LOG(ERROR) << "Failed to generate key: " << hash_or.status().ToString();
+  // --- Attestation Provider ---
+  std::string provider_flag = absl::GetFlag(FLAGS_attestation_provider);
+  std::unique_ptr<AttestationTokenProvider> attestation_provider;
+
+  if (provider_flag == "mock") {
+    LOG(INFO) << "Using mock attestation provider (local development).";
+    attestation_provider = CreateMockAttestationTokenProvider();
+  } else if (provider_flag == "ita") {
+    LOG(INFO) << "Using ITA attestation provider (GCP Confidential Space).";
+    attestation_provider = CreateGcpAttestationTokenProvider();
+  } else {
+    LOG(ERROR) << "Invalid --attestation_provider value: '" << provider_flag
+               << "'. Use 'mock' or 'ita'.";
     return;
   }
-  std::string key_hash = *hash_or;
 
-  // 2. Create a mock attestation token binding this key.
-  std::string attestation_token = GenerateMockAttestationToken(key_hash);
-  LOG(INFO) << "Mock attestation token generated (" << attestation_token.size()
-            << " bytes).";
-
-  // 3. Generate the self-signed certificate with the token embedded.
-  absl::StatusOr<std::pair<std::string, std::string>> creds_or =
-      generator.GenerateCertificate(attestation_token);
-  if (!creds_or.ok()) {
-    LOG(ERROR) << "Failed to generate certificate: "
-               << creds_or.status().ToString();
-    return;
-  }
-  std::string cert_pem = creds_or->first;
-  std::string private_key_pem = creds_or->second;
-
-  LOG(INFO) << "Ephemeral certificate ready.";
-
-  // 4. Configure gRPC server with TLS credentials.
-  grpc::SslServerCredentialsOptions ssl_opts;
-  grpc::SslServerCredentialsOptions::PemKeyCertPair pkcp = {private_key_pem,
-                                                            cert_pem};
-  ssl_opts.pem_key_cert_pairs.push_back(pkcp);
-  ssl_opts.client_certificate_request =
-      GRPC_SSL_DONT_REQUEST_CLIENT_CERTIFICATE;
-
-  auto server_creds = grpc::SslServerCredentials(ssl_opts);
-
-  // 5. Start the server.
-  AgentBrokerServiceImpl service;
-  std::string server_address = absl::StrCat("0.0.0.0:", port);
+  // --- Start Local Insecure gRPC Server ---
+  int local_port = absl::GetFlag(FLAGS_local_port);
+  std::string local_address = absl::StrCat("127.0.0.1:", local_port);
+  AgentBrokerServiceImpl service(engine.get());
 
   grpc::ServerBuilder builder;
-  builder.AddListeningPort(server_address, server_creds);
+  // Listen only on loopback for security, since proxy handles TLS.
+  builder.AddListeningPort(local_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
-
   std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-  LOG(INFO) << "ZTAB Server listening on " << server_address;
+  LOG(INFO) << "Local gRPC Server listening on " << local_address;
 
-  server->Wait();
+  // --- Start Public TLS Proxy ---
+  // Architecture: Standard TLS-terminating reverse proxy pattern (like
+  // nginx/envoy). gRPC runs insecure on loopback (inaccessible externally),
+  // while TlsProxy terminates TLS on the public port using ephemeral RA-TLS
+  // certificates. This decouples attestation token lifecycle from gRPC's
+  // internal SSL context caching (which cannot refresh certs per-handshake).
+  int public_port = absl::GetFlag(FLAGS_port);
+  TlsProxy proxy(public_port, local_port, attestation_provider.get());
+  absl::Status proxy_status = proxy.Start();
+  if (!proxy_status.ok()) {
+    LOG(ERROR) << "Failed to start TLS Proxy: " << proxy_status.ToString();
+    return;
+  }
+
+  // Install signal handlers so that proxy.Stop() drain logic executes on
+  // container shutdown (SIGTERM from Docker/Borg, SIGINT from Ctrl-C).
+  auto shutdown_handler = [](int signum) {
+    g_shutdown_requested = 1;
+  };
+  std::signal(SIGTERM, shutdown_handler);
+  std::signal(SIGINT, shutdown_handler);
+
+  // Poll until shutdown is requested
+  while (!g_shutdown_requested) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  LOG(INFO) << "Shutdown signal received, shutting down gRPC server...";
+  server->Shutdown();
+  proxy.Stop();
 }
 
 }  // namespace
 }  // namespace ztab
 
 int main(int argc, char** argv) {
-  std::string port = "8000";
-  if (argc > 1) {
-    port = argv[1];
-  }
-  ztab::RunServer(port);
+  absl::ParseCommandLine(argc, argv);
+  ztab::RunServer();
   return 0;
 }

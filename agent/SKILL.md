@@ -40,35 +40,16 @@ Echo response.
 To use the ZTAB tool, you must register the ZTAB MCP server
 in your local agent configuration.
 
-1. **Install dependencies**:
+1. **Install and Configure**:
+   We provide a fully automated script that creates a secure virtual
+   environment, installs all dependencies, and outputs the exact JSON 
+   configuration block required for your system.
+
+   Run the following command from the root of the ZTAB repository:
    ```bash
-   pip install -r agent/requirements.txt
+   bash agent/install_mcp.sh
    ```
 
 2. **Register the MCP Server**:
-   Add the following to your MCP configuration file (e.g.,
-   `mcp_config.json`):
-
-   ```json
-   {
-     "mcpServers": {
-       "ztab": {
-         "command": "python3",
-         "args": ["/path/to/ztab/agent/mcp_server.py"]
-       }
-     }
-   }
-   ```
-
-   Replace `/path/to/ztab/` with the actual path to your
-   cloned ZTAB repository.
-
-3. **Restricted pip environments**:
-   If `pip install` is restricted on your system, set up a
-   virtual environment:
-   ```bash
-   python3 -m venv /tmp/ztab-venv
-   /tmp/ztab-venv/bin/pip install -r agent/requirements.txt
-   ```
-   Then update the `command` in your MCP config to point to
-   `/tmp/ztab-venv/bin/python3`.
+   Copy the outputted JSON block from the script and paste it into
+   your local agent's MCP configuration file (e.g., `~/.gemini/mcp_config.json`, though the exact path varies depending on your agent environment).

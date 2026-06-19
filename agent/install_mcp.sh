@@ -38,6 +38,32 @@ pip install -r "${AGENT_DIR}/requirements.txt" || {
   pip install --extra-index-url https://pypi.org/simple/ -r "${AGENT_DIR}/requirements.txt"
 }
 
+BACKENDS_DIR="$HOME/.ztab"
+BACKENDS_FILE="${BACKENDS_DIR}/backends.json"
+
+if [ ! -f "$BACKENDS_FILE" ]; then
+  echo "Creating default ZTAB backends configuration at ${BACKENDS_FILE}..."
+  mkdir -p "$BACKENDS_DIR"
+  cat <<'EOF' > "$BACKENDS_FILE"
+{
+  "version": 1,
+  "default_backend": "dev-local",
+  "backends": [
+    {
+      "backend_id": "dev-local",
+      "name": "Local Development Server",
+      "description": "Local mock server for development. No attestation.",
+      "host": "localhost",
+      "port": 8000,
+      "verifier": "noop",
+      "expected_digest": "",
+      "allow_debug_tee": true
+    }
+  ]
+}
+EOF
+fi
+
 echo ""
 echo "------------------------------------------------------------"
 echo "✅ ZTAB MCP Server Installation Successful!"

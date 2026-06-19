@@ -7,13 +7,136 @@ option java_package = "com.google.ztab";
 option java_outer_classname = "SessionManagerProto";
 
 service AgentBrokerService {
+  // Existing RPC (backward compatibility / health check).
   rpc Echo(EchoRequest) returns (EchoResponse);
+
+  // Session management.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc JoinSession(JoinSessionRequest) returns (JoinSessionResponse);
+  rpc AcceptPolicy(AcceptPolicyRequest) returns (AcceptPolicyResponse);
+  rpc SubmitInput(SubmitInputRequest) returns (SubmitInputResponse);
+  rpc GetResult(GetResultRequest) returns (GetResultResponse);
+  rpc GetSessionStatus(GetSessionStatusRequest) returns (GetSessionStatusResponse);
 }
 
-message EchoRequest {
-  string message = 1;
+// --- Existing ---
+
+message EchoRequest { string message = 1; }
+message EchoResponse { string message = 2; }
+
+// --- Session Management ---
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  OPEN = 1;         // Waiting for participants to join and accept.
+  SEALED = 2;       // All joined and accepted, accepting inputs.
+  CALCULATING = 3;  // Processing inputs via LLM.
+  CLOSED = 4;       // Result available.
+  ABORTED = 5;      // Session failed or timed out.
 }
 
-message EchoResponse {
-  string message = 2;
+enum SessionError {
+  SESSION_ERROR_UNSPECIFIED = 0;
+  SESSION_NOT_FOUND = 1;
+  SESSION_FULL = 2;
+  SESSION_SEALED = 3;
+  INPUT_SCHEMA_VIOLATION = 4;
+  JOIN_TIMEOUT = 5;
+  INPUT_TIMEOUT = 6;
+  LLM_GENERATION_FAILED = 7;
+  OUTPUT_LEAKAGE_DETECTED = 8;
+  OUTPUT_SCHEMA_VIOLATION = 9;
+  RESOURCE_EXHAUSTED = 10;
+  INVALID_PARTICIPANT_TOKEN = 11;
+}
+
+message SessionPolicy {
+  // Which policy class to use (e.g. "ExtractAndResolve").
+  string policy_class = 1;
+
+  // JSON Schema for validating participant inputs.
+  string input_schema_json = 2;
+
+  // JSON Schema for validating LLM output (must include "pattern" for strings).
+  string output_schema_json = 3;
+
+  // Number of participants required before the session can proceed.
+  int32 expected_participants = 4;
+
+  // Per-state timeout in seconds. Applied to each state transition.
+  int32 timeout_seconds = 5;
+
+  // Phase 2+ (SDP support). Reserved but not implemented in Phase 1.
+  string sdp_signature = 6;
+  string signature_key_id = 7;
+}
+
+message CreateSessionRequest {
+  SessionPolicy policy = 1;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  SessionState state = 2;
+  // Creator's participant token for subsequent RPCs.
+  string participant_token = 3;
+}
+
+message JoinSessionRequest {
+  string session_id = 1;
+  // Optional role for role-based policy classes (Phase 2+).
+  string role = 2;
+}
+
+message JoinSessionResponse {
+  SessionState state = 1;
+  SessionPolicy policy = 2;
+  // Unique token binding this participant to the session.
+  string participant_token = 3;
+}
+
+message AcceptPolicyRequest {
+  string session_id = 1;
+  string participant_token = 2;
+}
+
+message AcceptPolicyResponse {
+  SessionState state = 1;
+}
+
+message SubmitInputRequest {
+  string session_id = 1;
+  string participant_token = 2;
+  string input_json = 3;
+}
+
+message SubmitInputResponse {
+  SessionState state = 1;
+  int32 remaining_inputs = 2;
+}
+
+message GetResultRequest {
+  string session_id = 1;
+  string participant_token = 2;
+}
+
+message GetResultResponse {
+  SessionState state = 1;
+  // Populated only when state == CLOSED.
+  string result_json = 2;
+  // Populated only when state == ABORTED.
+  SessionError error_code = 3;
+  string error_detail = 4;
+}
+
+message GetSessionStatusRequest {
+  string session_id = 1;
+  string participant_token = 2;
+}
+
+message GetSessionStatusResponse {
+  SessionState state = 1;
+  int32 participants_joined = 2;
+  int32 participants_accepted = 3;
+  int32 inputs_received = 4;
 }

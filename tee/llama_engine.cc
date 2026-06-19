@@ -102,6 +102,8 @@ class LlamaEngineImpl : public LlamaEngine {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = n_ctx_;
     ctx_params.n_batch = kBatchSize;
+    ctx_params.n_ubatch = kBatchSize;
+    ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     ctx_ = llama_init_from_model(model_, ctx_params);
     if (!ctx_) {
       LOG(ERROR) << "Failed to create llama context (n_ctx=" << n_ctx_ << ").";
@@ -239,6 +241,7 @@ absl::StatusOr<std::unique_ptr<LlamaEngine>> CreateLlamaEngine(
   llama_log_set(LlamaLogger, nullptr);
   llama_model_params model_params = llama_model_default_params();
   model_params.n_gpu_layers = gpu_layers;
+  model_params.use_mmap = false;
 
   LOG(INFO) << "Loading LLM from " << model_path;
   LOG(INFO) << "GPU layers: " << gpu_layers;

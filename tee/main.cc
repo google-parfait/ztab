@@ -33,6 +33,8 @@
 #include "grpcpp/security/server_credentials.h"
 #include "llama_engine.h"
 #include "mock_attestation_token_provider.h"
+#include "policy_registry.h"
+#include "session_manager.h"
 #include "session_manager.grpc.pb.h"
 #include "tls_proxy.h"
 
@@ -60,14 +62,42 @@ ABSL_FLAG(int32_t, local_port, 8001,
 namespace ztab {
 namespace {
 
+// Helper: convert absl::Status to grpc::Status.
+grpc::Status AbslToGrpc(const absl::Status& status) {
+  if (status.ok()) return grpc::Status::OK;
+  grpc::StatusCode code;
+  switch (status.code()) {
+    case absl::StatusCode::kPermissionDenied:
+      code = grpc::StatusCode::PERMISSION_DENIED;
+      break;
+    case absl::StatusCode::kFailedPrecondition:
+      code = grpc::StatusCode::FAILED_PRECONDITION;
+      break;
+    case absl::StatusCode::kInvalidArgument:
+      code = grpc::StatusCode::INVALID_ARGUMENT;
+      break;
+    case absl::StatusCode::kNotFound:
+      code = grpc::StatusCode::NOT_FOUND;
+      break;
+    case absl::StatusCode::kResourceExhausted:
+      code = grpc::StatusCode::RESOURCE_EXHAUSTED;
+      break;
+    case absl::StatusCode::kInternal:
+      code = grpc::StatusCode::INTERNAL;
+      break;
+    default:
+      code = grpc::StatusCode::UNKNOWN;
+      break;
+  }
+  return grpc::Status(code, std::string(status.message()));
+}
 
-// Echo implementation with optional LLM support.
-//
-// If a LlamaEngine is provided, Echo treats the incoming message as a prompt
-// and returns the LLM's generation. Otherwise, it simply echoes the input.
+// gRPC service implementation that delegates session RPCs to SessionManager
+// and keeps the original Echo RPC for backward compatibility / health checks.
 class AgentBrokerServiceImpl final : public AgentBrokerService::Service {
  public:
-  explicit AgentBrokerServiceImpl(LlamaEngine* engine) : engine_(engine) {}
+  AgentBrokerServiceImpl(LlamaEngine* engine, SessionManager* session_mgr)
+      : engine_(engine), session_mgr_(session_mgr) {}
 
   grpc::Status Echo(grpc::ServerContext* context, const EchoRequest* request,
                     EchoResponse* response) override {
@@ -96,8 +126,63 @@ class AgentBrokerServiceImpl final : public AgentBrokerService::Service {
     return grpc::Status::OK;
   }
 
+  grpc::Status CreateSession(grpc::ServerContext* context,
+                             const CreateSessionRequest* request,
+                             CreateSessionResponse* response) override {
+    auto result = session_mgr_->CreateSession(*request);
+    if (!result.ok()) return AbslToGrpc(result.status());
+    *response = *result;
+    return grpc::Status::OK;
+  }
+
+  grpc::Status JoinSession(grpc::ServerContext* context,
+                           const JoinSessionRequest* request,
+                           JoinSessionResponse* response) override {
+    auto result = session_mgr_->JoinSession(*request);
+    if (!result.ok()) return AbslToGrpc(result.status());
+    *response = *result;
+    return grpc::Status::OK;
+  }
+
+  grpc::Status AcceptPolicy(grpc::ServerContext* context,
+                            const AcceptPolicyRequest* request,
+                            AcceptPolicyResponse* response) override {
+    auto result = session_mgr_->AcceptPolicy(*request);
+    if (!result.ok()) return AbslToGrpc(result.status());
+    *response = *result;
+    return grpc::Status::OK;
+  }
+
+  grpc::Status SubmitInput(grpc::ServerContext* context,
+                           const SubmitInputRequest* request,
+                           SubmitInputResponse* response) override {
+    auto result = session_mgr_->SubmitInput(*request);
+    if (!result.ok()) return AbslToGrpc(result.status());
+    *response = *result;
+    return grpc::Status::OK;
+  }
+
+  grpc::Status GetResult(grpc::ServerContext* context,
+                         const GetResultRequest* request,
+                         GetResultResponse* response) override {
+    auto result = session_mgr_->GetResult(*request);
+    if (!result.ok()) return AbslToGrpc(result.status());
+    *response = *result;
+    return grpc::Status::OK;
+  }
+
+  grpc::Status GetSessionStatus(grpc::ServerContext* context,
+                                const GetSessionStatusRequest* request,
+                                GetSessionStatusResponse* response) override {
+    auto result = session_mgr_->GetSessionStatus(*request);
+    if (!result.ok()) return AbslToGrpc(result.status());
+    *response = *result;
+    return grpc::Status::OK;
+  }
+
  private:
-  LlamaEngine* engine_;       // Not owned.
+  LlamaEngine* engine_;           // Not owned.
+  SessionManager* session_mgr_;   // Not owned.
 };
 
 volatile sig_atomic_t g_shutdown_requested = 0;
@@ -127,6 +212,14 @@ void RunServer() {
     LOG(INFO) << "No --model_path specified; running in echo-only mode.";
   }
 
+  // --- Policy Registry ---
+  PolicyRegistry policy_registry;
+  LOG(INFO) << "Policy registry initialized.";
+
+  // --- Session Manager ---
+  SessionManager session_mgr(engine.get(), &policy_registry);
+  LOG(INFO) << "Session manager initialized.";
+
   // --- Attestation Provider ---
   std::string provider_flag = absl::GetFlag(FLAGS_attestation_provider);
   std::unique_ptr<AttestationTokenProvider> attestation_provider;
@@ -146,7 +239,7 @@ void RunServer() {
   // --- Start Local Insecure gRPC Server ---
   int local_port = absl::GetFlag(FLAGS_local_port);
   std::string local_address = absl::StrCat("127.0.0.1:", local_port);
-  AgentBrokerServiceImpl service(engine.get());
+  AgentBrokerServiceImpl service(engine.get(), &session_mgr);
 
   grpc::ServerBuilder builder;
   // Listen only on loopback for security, since proxy handles TLS.

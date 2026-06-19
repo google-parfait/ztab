@@ -142,6 +142,41 @@ cc_library(
     ],
 )
 
+# Policy Registry (built-in policy classes with prompt templates)
+cc_library(
+    name = "policy_registry",
+    srcs = ["policy_registry.cc"],
+    hdrs = ["policy_registry.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# Session Manager (multi-agent session state machine)
+cc_library(
+    name = "session_manager",
+    srcs = ["session_manager.cc"],
+    hdrs = ["session_manager.h"],
+    deps = [
+        ":llama_engine",
+        ":policy_registry",
+        ":session_manager_cc_proto",
+        ":session_manager_cc_grpc",
+        "@boringssl//:crypto",
+        "@nlohmann_json//:json",
+        "@re2//:re2",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
 # Server Binary
 cc_binary(
     name = "ztab_server",
@@ -151,6 +186,8 @@ cc_binary(
         ":gcp_attestation_token_provider",
         ":llama_engine",
         ":mock_attestation_token_provider",
+        ":policy_registry",
+        ":session_manager",
         ":session_manager_cc_grpc",
         ":session_manager_cc_proto",
         ":tls_proxy",
@@ -159,8 +196,10 @@ cc_binary(
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:initialize",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
     ],
 )
 

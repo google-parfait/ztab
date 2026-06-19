@@ -13,23 +13,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ZTAB CLI Tester.
-
-Connects to a ZTAB server, verifies attestation (no-op or ITA), calls Echo,
-and prints the result.
+"""ZTAB CLI — Agent Broker client for Echo and Session RPCs.
 
 Usage:
     # First, generate proto stubs (one-time):
     python3 generate_protos.py
 
-    # Local dev (mock attestation, no real verification):
-    python3 cli.py --host localhost --port 8000 --message "hello from agent"
+    # Echo (backward compatible):
+    python3 cli.py echo --message "hello from agent"
 
-    # Against GCP TEE (real ITA attestation):
-    python3 cli.py --host <GCP_IP> --port 8000 --verifier ita --message "hello"
+    # Session workflow (two terminals):
+    # Terminal 1 (creator):
+    python3 cli.py create-session --policy ExtractAndResolve --participants 2
+    python3 cli.py get-status --session-id <SID>
+    python3 cli.py submit-input --session-id <SID> --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z"]}'
+    python3 cli.py get-result --session-id <SID> --token <TOK>
+
+    # Terminal 2 (joiner):
+    python3 cli.py join-session --session-id <SID>
+    python3 cli.py accept-policy --session-id <SID> --token <TOK>
+    python3 cli.py submit-input --session-id <SID> --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z","2026-07-01T14:00:00Z"]}'
+    python3 cli.py get-result --session-id <SID> --token <TOK>
 """
 
 import argparse
+import json
 import logging
 import sys
 import os
@@ -48,74 +56,282 @@ import session_manager_pb2
 import session_manager_pb2_grpc
 
 
+def _make_stub(args):
+    """Create a connected gRPC stub from common connection args."""
+    verifier = _get_verifier(
+        args.verifier,
+        getattr(args, 'expected_digest', None),
+        allow_debug=getattr(args, 'allow_debug_tee', False),
+    )
+    channel_wrapper = ZtabChannel(host=args.host, port=args.port, verifier=verifier)
+    channel_wrapper.connect()
+    stub = session_manager_pb2_grpc.AgentBrokerServiceStub(channel_wrapper.grpc_channel)
+    return stub, channel_wrapper
+
+
+def _add_connection_args(parser):
+    """Add common connection arguments to a subparser."""
+    parser.add_argument("--host", default="localhost", help="Server host (default: localhost)")
+    parser.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
+    parser.add_argument(
+        "--verifier", required=True, choices=["noop", "ita"],
+        help="Attestation verifier to use (e.g., 'noop' or 'ita')",
+    )
+    parser.add_argument("--expected-digest", default=None, help="Expected container image digest")
+    parser.add_argument("--allow-debug-tee", action="store_true", default=False)
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress attestation details")
+
+
+def cmd_echo(args):
+    """Original Echo RPC for backward compatibility and health checks."""
+    stub, channel = _make_stub(args)
+    try:
+        request = session_manager_pb2.EchoRequest(message=args.message)
+        print(f"Sending Echo request: '{args.message}'")
+        response = stub.Echo(request)
+        print(f"Echo response: '{response.message}'")
+        print("\nEnd-to-end TLS + gRPC test PASSED.")
+    finally:
+        channel.close()
+
+
+def cmd_create_session(args):
+    """Create a new multi-agent session."""
+    stub, channel = _make_stub(args)
+    try:
+        policy = session_manager_pb2.SessionPolicy(
+            policy_class=args.policy,
+            expected_participants=args.participants,
+            timeout_seconds=args.timeout,
+        )
+        if args.input_schema:
+            policy.input_schema_json = args.input_schema
+        if args.output_schema:
+            policy.output_schema_json = args.output_schema
+
+        request = session_manager_pb2.CreateSessionRequest(policy=policy)
+        response = stub.CreateSession(request)
+
+        print(f"Session created successfully.")
+        print(f"  session_id: {response.session_id}")
+        print(f"  state:      {session_manager_pb2.SessionState.Name(response.state)}")
+        print(f"  token:      {response.participant_token}")
+        print(f"\nShare the session_id with other participants.")
+        print(f"Your token is secret — use it for subsequent RPCs.")
+    finally:
+        channel.close()
+
+
+def cmd_join_session(args):
+    """Join an existing session."""
+    stub, channel = _make_stub(args)
+    try:
+        request = session_manager_pb2.JoinSessionRequest(
+            session_id=args.session_id,
+            role=args.role or "",
+        )
+        response = stub.JoinSession(request)
+
+        print(f"Joined session successfully.")
+        print(f"  state:        {session_manager_pb2.SessionState.Name(response.state)}")
+        print(f"  policy_class: {response.policy.policy_class}")
+        print(f"  expected:     {response.policy.expected_participants} participants")
+        print(f"  token:        {response.participant_token}")
+        print(f"\nReview the policy above, then call accept-policy.")
+    finally:
+        channel.close()
+
+
+def cmd_accept_policy(args):
+    """Accept the session policy (must be called before submitting input)."""
+    stub, channel = _make_stub(args)
+    try:
+        request = session_manager_pb2.AcceptPolicyRequest(
+            session_id=args.session_id,
+            participant_token=args.token,
+        )
+        response = stub.AcceptPolicy(request)
+
+        state_name = session_manager_pb2.SessionState.Name(response.state)
+        print(f"Policy accepted.")
+        print(f"  state: {state_name}")
+        if response.state == session_manager_pb2.SEALED:
+            print(f"\nAll participants have accepted. Session is SEALED.")
+            print(f"You can now submit your input.")
+        else:
+            print(f"\nWaiting for other participants to accept.")
+    finally:
+        channel.close()
+
+
+def cmd_submit_input(args):
+    """Submit private input to the session."""
+    stub, channel = _make_stub(args)
+    try:
+        # Read input from --input flag or stdin.
+        input_json = args.input
+        if input_json == "-":
+            input_json = sys.stdin.read()
+
+        # Validate it's valid JSON.
+        try:
+            json.loads(input_json)
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON input: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        request = session_manager_pb2.SubmitInputRequest(
+            session_id=args.session_id,
+            participant_token=args.token,
+            input_json=input_json,
+        )
+        response = stub.SubmitInput(request)
+
+        state_name = session_manager_pb2.SessionState.Name(response.state)
+        print(f"Input submitted.")
+        print(f"  state:     {state_name}")
+        print(f"  remaining: {response.remaining_inputs} inputs needed")
+        if response.remaining_inputs == 0:
+            print(f"\nAll inputs received. LLM processing has started.")
+            print(f"Call get-result to retrieve the output.")
+        else:
+            print(f"\nWaiting for {response.remaining_inputs} more input(s).")
+    finally:
+        channel.close()
+
+
+def cmd_get_result(args):
+    """Get the session result."""
+    stub, channel = _make_stub(args)
+    try:
+        request = session_manager_pb2.GetResultRequest(
+            session_id=args.session_id,
+            participant_token=args.token,
+        )
+        response = stub.GetResult(request)
+
+        state_name = session_manager_pb2.SessionState.Name(response.state)
+        print(f"  state: {state_name}")
+
+        if response.state == session_manager_pb2.CLOSED:
+            print(f"\nResult:")
+            # Pretty-print if valid JSON.
+            try:
+                result = json.loads(response.result_json)
+                print(json.dumps(result, indent=2))
+            except json.JSONDecodeError:
+                print(response.result_json)
+        elif response.state == session_manager_pb2.ABORTED:
+            error_name = session_manager_pb2.SessionError.Name(response.error_code)
+            print(f"\nSession ABORTED:")
+            print(f"  error: {error_name}")
+            print(f"  detail: {response.error_detail}")
+        else:
+            print(f"\nResult not yet available. Session is still {state_name}.")
+            print(f"Try again after all inputs are submitted.")
+    finally:
+        channel.close()
+
+
+def cmd_get_status(args):
+    """Get current session status."""
+    stub, channel = _make_stub(args)
+    try:
+        request = session_manager_pb2.GetSessionStatusRequest(
+            session_id=args.session_id,
+            participant_token=args.token,
+        )
+        response = stub.GetSessionStatus(request)
+
+        state_name = session_manager_pb2.SessionState.Name(response.state)
+        print(f"Session status:")
+        print(f"  state:    {state_name}")
+        print(f"  joined:   {response.participants_joined}")
+        print(f"  accepted: {response.participants_accepted}")
+        print(f"  inputs:   {response.inputs_received}")
+    finally:
+        channel.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="ZTAB CLI Tester: connect, verify attestation, call Echo."
+        description="ZTAB CLI — Agent Broker client for Echo and Session RPCs.",
     )
-    parser.add_argument(
-        "--host", default="localhost", help="Server host (default: localhost)"
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # --- echo ---
+    echo_parser = subparsers.add_parser("echo", help="Send an Echo RPC (health check)")
+    _add_connection_args(echo_parser)
+    echo_parser.add_argument("--message", default="hello from ZTAB client", help="Message to send")
+
+    # --- create-session ---
+    create_parser = subparsers.add_parser("create-session", help="Create a new multi-agent session")
+    _add_connection_args(create_parser)
+    create_parser.add_argument("--policy", default="ExtractAndResolve", help="Policy class name")
+    create_parser.add_argument("--participants", type=int, default=2, help="Expected participant count")
+    create_parser.add_argument("--timeout", type=int, default=300, help="Per-state timeout in seconds")
+    create_parser.add_argument("--input-schema", default="", help="JSON Schema for input validation (optional)")
+    create_parser.add_argument("--output-schema", default="", help="JSON Schema for output validation (optional)")
+
+    # --- join-session ---
+    join_parser = subparsers.add_parser("join-session", help="Join an existing session")
+    _add_connection_args(join_parser)
+    join_parser.add_argument("--session-id", required=True, help="Session ID to join")
+    join_parser.add_argument("--role", default="", help="Role for role-based policies (Phase 2+)")
+
+    # --- accept-policy ---
+    accept_parser = subparsers.add_parser("accept-policy", help="Accept the session policy")
+    _add_connection_args(accept_parser)
+    accept_parser.add_argument("--session-id", required=True, help="Session ID")
+    accept_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
+
+    # --- submit-input ---
+    submit_parser = subparsers.add_parser("submit-input", help="Submit private input to the session")
+    _add_connection_args(submit_parser)
+    submit_parser.add_argument("--session-id", required=True, help="Session ID")
+    submit_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
+    submit_parser.add_argument(
+        "--input", required=True,
+        help="JSON input string, or '-' to read from stdin",
     )
-    parser.add_argument(
-        "--port", type=int, default=8000, help="Server port (default: 8000)"
-    )
-    parser.add_argument(
-        "--message",
-        default="hello from ZTAB client",
-        help="Message to send via Echo RPC",
-    )
-    parser.add_argument(
-        "--verifier",
-        default="noop",
-        choices=["noop", "ita"],
-        help="Attestation verifier: 'noop' (print-and-accept) or "
-             "'ita' (Intel Trust Authority JWT verification). "
-             "Default: noop",
-    )
-    parser.add_argument(
-        "--expected-digest",
-        default=None,
-        help="Expected container image digest (sha256:...). "
-             "Only used with --verifier=ita. If not set, the digest is "
-             "printed but not verified.",
-    )
-    parser.add_argument(
-        "-q", "--quiet",
-        action="store_true",
-        help="Suppress attestation verification details. "
-             "By default, full verification steps are printed.",
-    )
-    parser.add_argument(
-        "--allow-debug-tee",
-        action="store_true",
-        default=os.environ.get("ZTAB_ALLOW_DEBUG_TEE", "0") == "1",
-        help="Allow TEEs with debug mode enabled (for local testing)",
-    )
+
+    # --- get-result ---
+    result_parser = subparsers.add_parser("get-result", help="Get the session result")
+    _add_connection_args(result_parser)
+    result_parser.add_argument("--session-id", required=True, help="Session ID")
+    result_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
+
+    # --- get-status ---
+    status_parser = subparsers.add_parser("get-status", help="Get current session status")
+    _add_connection_args(status_parser)
+    status_parser.add_argument("--session-id", required=True, help="Session ID")
+    status_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
+
     args = parser.parse_args()
 
-    # Configure logging so attestation details are visible by default.
-    log_level = logging.WARNING if args.quiet else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(message)s",
-        stream=sys.stderr,
-    )
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
 
-    verifier = _get_verifier(
-        args.verifier, 
-        args.expected_digest,
-        allow_debug=args.allow_debug_tee
-    )
+    if hasattr(args, "token") and not args.token:
+        print("Error: The --token flag or ZTAB_TOKEN environment variable is required for this command.", file=sys.stderr)
+        sys.exit(1)
+
+    # Configure logging.
+    log_level = logging.WARNING if getattr(args, 'quiet', False) else logging.INFO
+    logging.basicConfig(level=log_level, format="%(message)s", stream=sys.stderr)
 
     try:
-        with ZtabChannel(host=args.host, port=args.port, verifier=verifier) as channel:
-            # Create a stub and call Echo.
-            stub = session_manager_pb2_grpc.AgentBrokerServiceStub(channel.grpc_channel)
-            request = session_manager_pb2.EchoRequest(message=args.message)
-
-            print(f"\nSending Echo request: '{args.message}'")
-            response = stub.Echo(request)
-            print(f"Echo response: '{response.message}'")
-            print("\nEnd-to-end TLS + gRPC test PASSED.")
+        commands = {
+            "echo": cmd_echo,
+            "create-session": cmd_create_session,
+            "join-session": cmd_join_session,
+            "accept-policy": cmd_accept_policy,
+            "submit-input": cmd_submit_input,
+            "get-result": cmd_get_result,
+            "get-status": cmd_get_status,
+        }
+        commands[args.command](args)
 
     except grpc.RpcError as e:
         print(f"\ngRPC error: {e.code()}: {e.details()}", file=sys.stderr)

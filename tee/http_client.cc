@@ -50,19 +50,20 @@ absl::StatusOr<std::string> PostJsonViaUnixSocket(
 
   std::string read_buffer;
   struct curl_slist* headers = nullptr;
-  std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list_guard(
-      headers, curl_slist_free_all);
 
-  struct curl_slist* new_headers = curl_slist_append(headers, "Content-Type: application/json");
-  if (!new_headers) {
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+  if (!headers) {
     return absl::InternalError("Failed to append Content-Type header.");
   }
-  header_list_guard.reset(new_headers);
-  new_headers = curl_slist_append(header_list_guard.get(), "Metadata-Flavor: Google");
-  if (!new_headers) {
+  struct curl_slist* tmp = curl_slist_append(headers, "Metadata-Flavor: Google");
+  if (!tmp) {
+    curl_slist_free_all(headers);
     return absl::InternalError("Failed to append Metadata-Flavor header.");
   }
-  header_list_guard.reset(new_headers);
+  headers = tmp;
+
+  std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list_guard(
+      headers, curl_slist_free_all);
 
   curl_easy_setopt(curl, CURLOPT_URL, std::string(url).c_str());
   curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH,

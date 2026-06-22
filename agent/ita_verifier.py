@@ -115,7 +115,7 @@ def create_ita_verifier(
     expected_image_digest: Optional[str] = None,
     require_secure_boot: bool = True,
     require_debug_disabled: bool = True,
-    clock_skew_seconds: int = 60,
+    clock_skew_seconds: int = 300,
 ) -> Callable[[str, bytes], bool]:
     """Create an ITA attestation verifier function.
 
@@ -282,7 +282,7 @@ def create_ita_verifier(
         logger.info("  [OK] Key binding (eat_nonce matches cert pubkey hash)")
 
         # --- Step 5: Optional container image digest ---
-        if expected_image_digest is not None:
+        if expected_image_digest is not None and expected_image_digest != "":
             submods = claims.get("submods", {})
             container = submods.get("container", {})
             actual_digest = container.get("image_digest", "")

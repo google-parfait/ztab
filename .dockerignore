@@ -1,0 +1,23 @@
+# Exclude version control
+.git
+.gitignore
+
+# Exclude Python caches
+__pycache__
+*.pyc
+*.pyo
+
+# Exclude build artifacts
+bazel-*
+
+# Exclude IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Exclude docs (not needed in container)
+docs/
+
+# Exclude test run outputs
+/tmp/ztab_runs

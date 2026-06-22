@@ -18,6 +18,7 @@
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
 namespace ztab {
@@ -33,21 +34,44 @@ struct PolicyDefinition {
   std::string default_output_schema_json;
 };
 
-// Registry of built-in policy classes. Phase 1 supports a single hardcoded
-// policy ("ExtractAndResolve"). Additional policy classes will be registered
-// here in Phase 2+.
+// Registry of policy classes loaded from JSON files at startup.
 //
-// The PolicyRegistry is NOT where prompt templates are stored for security
-// reasons (agents cannot supply arbitrary templates). Templates are part of
-// the trusted codebase — changing them requires a new image build, which
-// changes the attestation digest.
+// SECURITY NOTE ON POLICY REGISTRATION:
+// Policies are currently loaded from disk at deployment time via
+// LoadFromDirectory(). This is intentional — policy text is part of the
+// trusted codebase. For baked-in container images (GCP Confidential Space),
+// the policy files are included in the image, so changing them changes the
+// attestation digest, which clients can verify.
+//
+// FUTURE EXTENSIBILITY:
+// A future extension could allow agents to define ad-hoc policies at session
+// creation time (passing the prompt template in the CreateSession RPC). This
+// would weaken the security model because arbitrary prompts from untrusted
+// clients would bypass attestation. If implemented, it should be gated by an
+// explicit --allow_adhoc_policies flag and documented as a trust trade-off.
 class PolicyRegistry {
  public:
   PolicyRegistry();
 
+  // Load all *.json policy files from a directory.
+  //
+  // FAIL-FAST: Returns an error (and the server MUST crash) if:
+  //   1. The directory does not exist or cannot be opened.
+  //   2. Any JSON file is malformed (parse error).
+  //   3. Any JSON file is missing required fields (policy_class,
+  //      prompt_template, input_schema).
+  //   4. Two files define the same policy_class (name collision).
+  //
+  // On success, all policies from the directory are registered and available
+  // via GetPolicy().
+  absl::Status LoadFromDirectory(const std::string& dir_path);
+
   // Returns the definition for a known policy class, or NOT_FOUND.
   absl::StatusOr<const PolicyDefinition*> GetPolicy(
       const std::string& policy_class) const;
+
+  // Returns the number of registered policies.
+  int size() const { return policies_.size(); }
 
  private:
   absl::flat_hash_map<std::string, PolicyDefinition> policies_;

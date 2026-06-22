@@ -14,65 +14,135 @@
 
 #include "policy_registry.h"
 
+#include <dirent.h>
+
+#include <fstream>
+#include <sstream>
+#include <string>
+
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "nlohmann/json.hpp"
 
 namespace ztab {
 
 PolicyRegistry::PolicyRegistry() {
-  // Phase 1: Single built-in policy class for calendar scheduling.
-  //
-  // ExtractAndResolve: Aggregates private inputs from multiple participants,
-  // uses the LLM to extract and compute a shared result (e.g., overlapping
-  // time slots), and returns only the computed result — not the raw inputs.
-  policies_["ExtractAndResolve"] = PolicyDefinition{
-      .prompt_template = R"(You are a scheduling assistant running inside a Trusted Execution Environment.
-Below are availability inputs from {num_participants} participants.
-Each participant's data is private — you MUST NOT reveal any individual's schedule in your output.
+  // Empty — policies are loaded dynamically via LoadFromDirectory().
+}
 
-{inputs}
+absl::Status PolicyRegistry::LoadFromDirectory(const std::string& dir_path) {
+  DIR* dir = opendir(dir_path.c_str());
+  if (dir == nullptr) {
+    return absl::NotFoundError(
+        absl::StrCat("Policy directory not found: '", dir_path, "'"));
+  }
 
-Find all time slots where ALL participants are available.
-Output ONLY a JSON array of ISO 8601 datetime strings.
-Example: ["2026-07-01T10:00:00Z", "2026-07-01T14:00:00Z"]
-Do not include any explanation, reasoning, or commentary. Output only the JSON array.)",
+  int loaded = 0;
+  struct dirent* entry;
+  while ((entry = readdir(dir)) != nullptr) {
+    std::string filename(entry->d_name);
 
-      .default_input_schema_json = R"({
-  "type": "object",
-  "properties": {
-    "available_slots": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z$"
-      },
-      "minItems": 1,
-      "maxItems": 200
+    // Only process *.json files.
+    if (filename.size() < 5 ||
+        filename.substr(filename.size() - 5) != ".json") {
+      continue;
     }
-  },
-  "required": ["available_slots"],
-  "additionalProperties": false
-})",
 
-      .default_output_schema_json = R"({
-  "type": "array",
-  "items": {
-    "type": "string",
-    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z$"
-  },
-  "minItems": 0,
-  "maxItems": 200
-})",
-  };
+    std::string filepath = absl::StrCat(dir_path, "/", filename);
+
+    // Read file contents.
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+      closedir(dir);
+      return absl::InternalError(
+          absl::StrCat("Cannot open policy file: '", filepath, "'"));
+    }
+
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    file.close();
+
+    // Parse JSON.
+    nlohmann::json doc;
+    try {
+      doc = nlohmann::json::parse(contents.str());
+    } catch (const nlohmann::json::parse_error& e) {
+      closedir(dir);
+      return absl::InvalidArgumentError(
+          absl::StrCat("Malformed JSON in '", filepath, "': ", e.what()));
+    }
+
+    // Validate required fields.
+    if (!doc.contains("policy_class") || !doc["policy_class"].is_string()) {
+      closedir(dir);
+      return absl::InvalidArgumentError(
+          absl::StrCat("Missing or invalid 'policy_class' in '", filepath,
+                       "'"));
+    }
+    if (!doc.contains("prompt_template") ||
+        !doc["prompt_template"].is_string()) {
+      closedir(dir);
+      return absl::InvalidArgumentError(
+          absl::StrCat("Missing or invalid 'prompt_template' in '", filepath,
+                       "'"));
+    }
+    if (!doc.contains("input_schema") || !doc["input_schema"].is_object()) {
+      closedir(dir);
+      return absl::InvalidArgumentError(
+          absl::StrCat("Missing or invalid 'input_schema' in '", filepath,
+                       "'"));
+    }
+
+    std::string policy_class = doc["policy_class"].get<std::string>();
+
+    // Check for name collision.
+    if (policies_.contains(policy_class)) {
+      closedir(dir);
+      return absl::AlreadyExistsError(
+          absl::StrCat("Duplicate policy_class '", policy_class,
+                       "' found in '", filepath,
+                       "'. Each policy_class must be unique."));
+    }
+
+    // Build PolicyDefinition.
+    PolicyDefinition def;
+    def.prompt_template = doc["prompt_template"].get<std::string>();
+    def.default_input_schema_json = doc["input_schema"].dump();
+
+    if (doc.contains("output_schema") && doc["output_schema"].is_object()) {
+      def.default_output_schema_json = doc["output_schema"].dump();
+    }
+
+    policies_[policy_class] = std::move(def);
+    ++loaded;
+    LOG(INFO) << "Loaded policy '" << policy_class << "' from " << filepath;
+  }
+
+  closedir(dir);
+
+  if (loaded == 0) {
+    return absl::NotFoundError(
+        absl::StrCat("No *.json policy files found in '", dir_path, "'"));
+  }
+
+  LOG(INFO) << "PolicyRegistry: loaded " << loaded << " policies from "
+            << dir_path;
+  return absl::OkStatus();
 }
 
 absl::StatusOr<const PolicyDefinition*> PolicyRegistry::GetPolicy(
     const std::string& policy_class) const {
   auto it = policies_.find(policy_class);
   if (it == policies_.end()) {
+    std::string available;
+    for (const auto& [name, _] : policies_) {
+      if (!available.empty()) available += ", ";
+      available += name;
+    }
     return absl::NotFoundError(
         absl::StrCat("Unknown policy class: '", policy_class,
-                     "'. Available: ExtractAndResolve"));
+                     "'. Available: ", available.empty() ? "(none)" : available));
   }
   return &it->second;
 }

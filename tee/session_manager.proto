@@ -51,7 +51,7 @@ enum SessionError {
 }
 
 message SessionPolicy {
-  // Which policy class to use (e.g. "ExtractAndResolve").
+  // Which policy class to use (e.g. "ScheduleOverlap").
   string policy_class = 1;
 
   // JSON Schema for validating participant inputs.

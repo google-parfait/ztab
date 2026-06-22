@@ -37,7 +37,7 @@ cc_library(
         "GGML_COMMIT='\"ztab\"'",
         "GGML_USE_CPU",
     ] + select({
-        "@//:cuda_enabled": ["GGML_USE_CUDA"],
+        "@//tee:cuda_enabled": ["GGML_USE_CUDA"],
         "//conditions:default": [],
     }),
     linkopts = LINKOPTS,
@@ -144,7 +144,7 @@ cc_library(
         ":ggml-base",
         ":ggml-cpu",
     ] + select({
-        "@//:cuda_enabled": [":ggml-cuda"],
+        "@//tee:cuda_enabled": [":ggml-cuda"],
         "//conditions:default": [],
     }),
 )

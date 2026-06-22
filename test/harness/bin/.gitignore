@@ -1,0 +1,4 @@
+# Ignore compiled binaries - only the README is tracked
+*
+!README.md
+!.gitignore

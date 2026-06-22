@@ -24,7 +24,7 @@ Usage:
 
     # Session workflow (two terminals):
     # Terminal 1 (creator):
-    python3 cli.py create-session --policy ExtractAndResolve --participants 2
+    python3 cli.py create-session --policy ScheduleOverlap --participants 2
     python3 cli.py get-status --session-id <SID>
     python3 cli.py submit-input --session-id <SID> --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z"]}'
     python3 cli.py get-result --session-id <SID> --token <TOK>
@@ -267,7 +267,7 @@ def main():
     # --- create-session ---
     create_parser = subparsers.add_parser("create-session", help="Create a new multi-agent session")
     _add_connection_args(create_parser)
-    create_parser.add_argument("--policy", default="ExtractAndResolve", help="Policy class name")
+    create_parser.add_argument("--policy", default="ScheduleOverlap", help="Policy class name")
     create_parser.add_argument("--participants", type=int, default=2, help="Expected participant count")
     create_parser.add_argument("--timeout", type=int, default=300, help="Per-state timeout in seconds")
     create_parser.add_argument("--input-schema", default="", help="JSON Schema for input validation (optional)")

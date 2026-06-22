@@ -27,13 +27,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}"
+cd "${SCRIPT_DIR}/.."
 
 MODEL=""
 PORT=8000
 GPU_ARGS=""
 DETACHED=""
 GCS_BUCKET=""
+POLICY_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +46,8 @@ while [[ $# -gt 0 ]]; do
     --gpu)         GPU_ARGS="--gpus all"; shift ;;
     --gcs_bucket)  GCS_BUCKET="$2"; shift 2 ;;
     --gcs_bucket=*) GCS_BUCKET="${1#*=}"; shift ;;
+    --policy_dir)  POLICY_DIR="$2"; shift 2 ;;
+    --policy_dir=*) POLICY_DIR="${1#*=}"; shift ;;
     -d)            DETACHED="-d"; shift ;;
     *)
       if [[ "$1" == "llm" ]]; then
@@ -81,18 +84,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${MODEL}" ]]; then
-    LOAD_TARGET=":ztab_server_echo_tarball"
+    LOAD_TARGET="//gcp:ztab_server_echo_tarball"
     DOCKER_TAG="ztab-server-echo:latest"
-    BAZEL_EXTRA_ARGS=""
+    BAZEL_EXTRA_ARGS="-c opt"
 else
     if [[ -z "${GCS_BUCKET}" ]]; then
       echo "ERROR: --gcs_bucket is required when using --llm or --model."
       echo "Example: ./run_server.sh --llm --gcs_bucket gs://your-model-bucket"
       exit 1
     fi
-    LOAD_TARGET=":ztab_server_local_${MODEL}_tarball"
+    LOAD_TARGET="//gcp:ztab_server_local_${MODEL}_tarball"
     DOCKER_TAG="ztab-server-local-${MODEL}:latest"
-    BAZEL_EXTRA_ARGS="--repo_env=GCS_MODEL_BUCKET=${GCS_BUCKET}"
+    BAZEL_EXTRA_ARGS="-c opt --repo_env=GCS_MODEL_BUCKET=${GCS_BUCKET}"
 fi
 
 CONTAINER_NAME="ztab-server"
@@ -105,6 +108,9 @@ else
 fi
 echo "  Port:   ${PORT}"
 echo "  Image:  ${DOCKER_TAG}"
+if [[ -n "${POLICY_DIR}" ]]; then
+  echo "  Policies: ${POLICY_DIR}"
+fi
 echo "══════════════════════════════════════════════════════════════"
 
 # Step 1: Build OCI image and load into Docker.
@@ -122,13 +128,21 @@ fi
 # Step 2: Run the container.
 echo ""
 echo "==> Starting server on port ${PORT}..."
+# Build Docker run args.
+DOCKER_EXTRA_ARGS=""
+if [[ -n "${POLICY_DIR}" ]]; then
+  # Mount policy directory into the container and pass --policy_dir.
+  POLICY_DIR_ABS="$(cd "${POLICY_DIR}" && pwd)"
+  DOCKER_EXTRA_ARGS="-v ${POLICY_DIR_ABS}:/policies:ro"
+fi
+
 if [[ "${DETACHED}" == "-d" ]]; then
-  docker run --rm -d -p "${PORT}:8000" ${GPU_ARGS} \
+  docker run --rm -d -p "${PORT}:8000" ${GPU_ARGS} ${DOCKER_EXTRA_ARGS} \
     --name "${CONTAINER_NAME}" "${DOCKER_TAG}"
   echo "Server is running in background. Logs:"
   echo "  docker logs -f ${CONTAINER_NAME}"
 else
   echo "Press Ctrl+C to stop the server."
-  docker run --rm -p "${PORT}:8000" ${GPU_ARGS} \
+  docker run --rm -p "${PORT}:8000" ${GPU_ARGS} ${DOCKER_EXTRA_ARGS} \
     --name "${CONTAINER_NAME}" "${DOCKER_TAG}"
 fi

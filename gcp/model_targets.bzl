@@ -61,14 +61,16 @@ def ztab_model_targets(model_name, weights_label, weights_filename):
             base = "@distroless_cc_debian12_base",
             cmd = variant["cmd_extra"] + [
                 "--model_path=/model/" + weights_filename,
+                "--policy_dir=/policies",
                 "--port=8000",
             ],
             entrypoint = ["/ztab_server"],
             env = variant["env"],
             exposed_ports = ["8000/tcp"],
             tars = [
-                ":ztab_server_tar",
+                "//tee:ztab_server_tar",
                 ":" + model_layer_name,
+                ":policy_layer",
             ],
         )
 

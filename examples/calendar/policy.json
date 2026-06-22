@@ -1,0 +1,29 @@
+{
+  "policy_class": "ScheduleOverlap",
+  "prompt_template": "You are a scheduling assistant running inside a Trusted Execution Environment.\nBelow are availability inputs from {num_participants} participants.\nEach participant's data is private — you MUST NOT reveal any individual's schedule in your output.\n\n{inputs}\n\nIdentify EVERY single time slot where ALL participants are available. You MUST check all dates and times carefully. Do not stop after the first match; list every overlapping slot.\nOutput ONLY a JSON array of ISO 8601 datetime strings.\nExample: [\"2026-07-01T10:00:00Z\", \"2026-07-01T14:00:00Z\"]\nDo not include any explanation, reasoning, or commentary. Output only the JSON array.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "available_slots": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z$"
+        },
+        "minItems": 1,
+        "maxItems": 200
+      }
+    },
+    "required": ["available_slots"],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "array",
+    "items": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z$"
+    },
+    "minItems": 0,
+    "maxItems": 200
+  }
+}

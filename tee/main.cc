@@ -57,6 +57,11 @@ ABSL_FLAG(int32_t, local_port, 8001,
           "Port for the local insecure gRPC server on loopback (127.0.0.1). "
           "This port is not accessible from outside the container.");
 
+ABSL_FLAG(std::string, policy_dir, "",
+          "Directory containing *.json policy files to load at startup. "
+          "If empty, no policies are loaded and session creation will fail. "
+          "Example: --policy_dir=examples/calendar/");
+
 
 
 namespace ztab {
@@ -214,7 +219,19 @@ void RunServer() {
 
   // --- Policy Registry ---
   PolicyRegistry policy_registry;
-  LOG(INFO) << "Policy registry initialized.";
+  std::string policy_dir = absl::GetFlag(FLAGS_policy_dir);
+  if (!policy_dir.empty()) {
+    auto status = policy_registry.LoadFromDirectory(policy_dir);
+    if (!status.ok()) {
+      LOG(FATAL) << "Failed to load policies from '" << policy_dir
+                 << "': " << status.ToString();
+    }
+    LOG(INFO) << "Loaded " << policy_registry.size() << " policies from "
+              << policy_dir;
+  } else {
+    LOG(WARNING) << "No --policy_dir specified. No policies loaded. "
+                 << "Session creation will fail.";
+  }
 
   // --- Session Manager ---
   SessionManager session_mgr(engine.get(), &policy_registry);

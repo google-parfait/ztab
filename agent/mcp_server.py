@@ -50,19 +50,8 @@ PROTOCOL_VERSION = "2024-11-05"
 
 # --- Backend Configuration Loading ---
 
-def _load_backends():
-    """Load backend config from disk. Called once at startup."""
-    config_path = os.environ.get("ZTAB_BACKENDS_FILE")
-    if not config_path:
-        # DESIGN_DECISION: Reading from ~/.ztab/backends.json is intentional.
-        # In production deployments, this file is expected to be a read-only
-        # volume mount securely injected by the host orchestrator. It is not an
-        # architectural flaw for the agent to have read access to it.
-        config_path = os.path.expanduser("~/.ztab/backends.json")
-
-    if not os.path.exists(config_path):
-        return None
-
+def _load_backends_from(config_path):
+    """Load and validate backend config from a specific file path."""
     try:
         with open(config_path, "r") as f:
             config = json.load(f)
@@ -73,6 +62,18 @@ def _load_backends():
 
     _validate_backends(config, config_path)
     return config
+
+
+def _backends_config_path():
+    """Return the resolved path to backends.json."""
+    path = os.environ.get("ZTAB_BACKENDS_FILE")
+    if not path:
+        # DESIGN_DECISION: Reading from ~/.ztab/backends.json is intentional.
+        # In production deployments, this file is expected to be a read-only
+        # volume mount securely injected by the host orchestrator. It is not an
+        # architectural flaw for the agent to have read access to it.
+        path = os.path.expanduser("~/.ztab/backends.json")
+    return path
 
 
 def _validate_backends(config, config_path):
@@ -101,24 +102,51 @@ def _validate_backends(config, config_path):
               f"does not match any backend_id", file=sys.stderr)
 
 
-BACKENDS_CONFIG = _load_backends()
+# --- Lazy Backend Loading with mtime Check ---
+# Instead of loading once at startup, we check the file's mtime on each access.
+# If it changed, we reload from disk and flush _CHANNEL_CACHE so stale gRPC
+# connections to old host:port are discarded. This enables the agent to write
+# new backends to backends.json after the MCP server is already running.
+_backends_mtime_ns = 0
+_backends_config = None
+
+
+def _get_backends():
+    """Return the current backends config, reloading if the file changed."""
+    global _backends_mtime_ns, _backends_config
+    path = _backends_config_path()
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    if st.st_mtime_ns != _backends_mtime_ns:
+        new_config = _load_backends_from(path)
+        if _backends_config is not None and new_config is not None:
+            # Config changed after initial load — flush stale channels
+            print(f"[ztab] backends.json changed, reloading and flushing channel cache",
+                  file=sys.stderr)
+            _CHANNEL_CACHE.clear()
+        _backends_config = new_config
+        _backends_mtime_ns = st.st_mtime_ns
+    return _backends_config
 
 
 def _get_backend_info(backend_id=None):
     """Look up a backend by ID, falling back to default_backend."""
-    if not BACKENDS_CONFIG:
+    config = _get_backends()
+    if not config:
         raise ValueError(
             "Backend configuration is missing. Please ensure "
             "~/.ztab/backends.json exists or ZTAB_BACKENDS_FILE is set."
         )
 
-    bid = backend_id or BACKENDS_CONFIG.get("default_backend")
+    bid = backend_id or config.get("default_backend")
     if not bid:
         raise ValueError(
             "No backend_id provided and no default_backend configured."
         )
 
-    backends = BACKENDS_CONFIG.get("backends", [])
+    backends = config.get("backends", [])
     for b in backends:
         if b.get("backend_id") == bid:
             return b
@@ -169,7 +197,7 @@ TOOLS = [
             "properties": {
                 "policy_class": {
                     "type": "string",
-                    "description": "Policy class name (e.g., 'ExtractAndResolve')",
+                    "description": "Policy class name (e.g., 'ScheduleOverlap')",
                 },
                 "expected_participants": {
                     "type": "integer",
@@ -292,13 +320,60 @@ def decode_jwt_payload(token: str) -> dict | None:
 from verifier_factory import get_verifier as _get_verifier
 
 
+# --- Channel Cache ---
+# Persist gRPC channels across tool calls so all RPCs for a given backend
+# reuse the same TCP connection (HTTP/2 multiplexing). This eliminates the
+# per-RPC TLS handshake and attestation overhead that caused the
+# 329-connection storm.
+_CHANNEL_CACHE = {}  # backend_id -> (ZtabChannel, stub)
+
+
 def _get_stub(host, port, verifier_name="noop", expected_digest=None, allow_debug=False):
-    """Create a connected gRPC stub."""
+    """Create a connected gRPC stub (uncached — use _get_cached_stub instead)."""
     verifier = _get_verifier(verifier_name, expected_digest, allow_debug)
     channel_wrapper = ZtabChannel(host=host, port=port, verifier=verifier)
     grpc_channel = channel_wrapper.connect()
     stub = session_manager_pb2_grpc.AgentBrokerServiceStub(grpc_channel)
-    return stub, channel_wrapper
+    return channel_wrapper, stub
+
+
+def _get_cached_stub(arguments):
+    """Return a cached (channel, stub) for the resolved backend.
+
+    Creates a new connection on first call for each backend_id, then reuses
+    it for all subsequent calls. If a call fails with UNAVAILABLE (stale
+    channel), the caller should call _evict_backend() and retry.
+    """
+    backend = _get_backend_info(arguments.get("backend"))
+    bid = backend["backend_id"]
+
+    if bid not in _CHANNEL_CACHE:
+        conn_args = {
+            "host": backend.get("host", "localhost"),
+            "port": int(backend.get("port", 8000)),
+            "verifier_name": backend["verifier"],
+            "expected_digest": backend.get("expected_digest"),
+            "allow_debug": backend.get("allow_debug_tee", False),
+        }
+        channel, stub = _get_stub(**conn_args)
+        _CHANNEL_CACHE[bid] = (channel, stub)
+        print(f"[ztab] Channel created for backend '{bid}'", file=sys.stderr)
+
+    return _CHANNEL_CACHE[bid]
+
+
+def _evict_backend(arguments):
+    """Evict a stale channel from the cache (e.g., after UNAVAILABLE)."""
+    backend = _get_backend_info(arguments.get("backend"))
+    bid = backend["backend_id"]
+    entry = _CHANNEL_CACHE.pop(bid, None)
+    if entry:
+        channel, _ = entry
+        try:
+            channel.close()
+        except Exception:
+            pass
+        print(f"[ztab] Evicted stale channel for backend '{bid}'", file=sys.stderr)
 
 
 def _common_args(arguments):
@@ -320,11 +395,12 @@ def _common_args(arguments):
 
 def run_list_backends(_arguments):
     """Return sanitized metadata about configured backends."""
-    if not BACKENDS_CONFIG:
+    config = _get_backends()
+    if not config:
         return {"status": "error", "message": "Backend configuration is missing."}
 
     sanitized = []
-    for b in BACKENDS_CONFIG.get("backends", []):
+    for b in config.get("backends", []):
         sec_level = "production" if b.get("verifier") != "noop" else "development"
         sanitized.append({
             "backend_id": b.get("backend_id"),
@@ -336,14 +412,19 @@ def run_list_backends(_arguments):
     return {
         "status": "success",
         "backends": sanitized,
-        "default_backend": BACKENDS_CONFIG.get("default_backend"),
+        "default_backend": config.get("default_backend"),
     }
 
 
 def run_connectivity_test(host, port, message, verifier_name="noop",
                          expected_digest=None, allow_debug=False):
-    """Connects to server, extracts attestation, runs Echo RPC."""
-    stub, channel_wrapper = _get_stub(host, port, verifier_name, expected_digest, allow_debug)
+    """Connects to server, extracts attestation, runs Echo RPC.
+
+    Note: This function intentionally does NOT use the channel cache because
+    it is a diagnostic tool — the user expects it to perform a fresh TLS
+    handshake and attestation every time it is called.
+    """
+    channel_wrapper, stub = _get_stub(host, port, verifier_name, expected_digest, allow_debug)
     try:
         request = session_manager_pb2.EchoRequest(message=message)
         response = stub.Echo(request)
@@ -367,8 +448,7 @@ def run_connectivity_test(host, port, message, verifier_name="noop",
 
 def run_create_session(arguments):
     """Create a new session."""
-    conn = _common_args(arguments)
-    stub, channel = _get_stub(**conn)
+    channel, stub = _get_cached_stub(arguments)
     try:
         policy = session_manager_pb2.SessionPolicy(
             policy_class=arguments["policy_class"],
@@ -384,15 +464,14 @@ def run_create_session(arguments):
             "instructions": "Share session_id with other participants. Keep your token secret.",
         }
     except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            _evict_backend(arguments)
         return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
-    finally:
-        channel.close()
 
 
 def run_join_session(arguments):
     """Join an existing session."""
-    conn = _common_args(arguments)
-    stub, channel = _get_stub(**conn)
+    channel, stub = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.JoinSessionRequest(
             session_id=arguments["session_id"],
@@ -408,15 +487,14 @@ def run_join_session(arguments):
             "instructions": "Review the policy, then call ztab_accept_policy.",
         }
     except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            _evict_backend(arguments)
         return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
-    finally:
-        channel.close()
 
 
 def run_accept_policy(arguments):
     """Accept the session policy."""
-    conn = _common_args(arguments)
-    stub, channel = _get_stub(**conn)
+    channel, stub = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.AcceptPolicyRequest(
             session_id=arguments["session_id"],
@@ -431,15 +509,14 @@ def run_accept_policy(arguments):
             result["instructions"] = "Waiting for other participants to accept."
         return result
     except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            _evict_backend(arguments)
         return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
-    finally:
-        channel.close()
 
 
 def run_submit_input(arguments):
     """Submit input to the session."""
-    conn = _common_args(arguments)
-    stub, channel = _get_stub(**conn)
+    channel, stub = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.SubmitInputRequest(
             session_id=arguments["session_id"],
@@ -459,15 +536,14 @@ def run_submit_input(arguments):
             result["instructions"] = f"Waiting for {response.remaining_inputs} more input(s)."
         return result
     except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            _evict_backend(arguments)
         return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
-    finally:
-        channel.close()
 
 
 def run_get_result(arguments):
     """Get session result."""
-    conn = _common_args(arguments)
-    stub, channel = _get_stub(**conn)
+    channel, stub = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.GetResultRequest(
             session_id=arguments["session_id"],
@@ -488,15 +564,14 @@ def run_get_result(arguments):
             result["instructions"] = f"Result not yet available. State is {state_name}."
         return result
     except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            _evict_backend(arguments)
         return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
-    finally:
-        channel.close()
 
 
 def run_get_session_status(arguments):
     """Get session status."""
-    conn = _common_args(arguments)
-    stub, channel = _get_stub(**conn)
+    channel, stub = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.GetSessionStatusRequest(
             session_id=arguments["session_id"],
@@ -511,12 +586,38 @@ def run_get_session_status(arguments):
             "inputs_received": response.inputs_received,
         }
     except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            _evict_backend(arguments)
         return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
-    finally:
-        channel.close()
 
 
 # --- MCP Tool Dispatch ---
+
+# Build a schema lookup from the TOOLS list for argument validation.
+_TOOL_SCHEMAS = {t["name"]: t.get("inputSchema", {}) for t in TOOLS}
+
+
+def _validate_required_args(tool_name, arguments):
+    """Validate that all required arguments are present before dispatch.
+
+    Returns None if valid, or an error result dict if validation fails.
+    """
+    schema = _TOOL_SCHEMAS.get(tool_name, {})
+    required = schema.get("required", [])
+    missing = [r for r in required if r not in arguments]
+    if missing:
+        all_props = list(schema.get("properties", {}).keys())
+        return {
+            "status": "error",
+            "message": (
+                f"Missing required argument{'s' if len(missing) > 1 else ''}: "
+                f"{', '.join(missing)}. "
+                f"Required arguments for {tool_name}: {', '.join(required)}. "
+                f"All accepted arguments: {', '.join(all_props)}."
+            ),
+        }
+    return None
+
 
 TOOL_HANDLERS = {
     "ztab_list_backends": run_list_backends,
@@ -553,12 +654,17 @@ def handle_request(method: str, params: dict) -> dict | None:
         arguments = params.get("arguments", {})
         handler = TOOL_HANDLERS.get(tool_name)
         if handler:
-            try:
-                result = handler(arguments)
-            except ValueError as e:
-                result = {"status": "error", "message": str(e)}
-            except Exception as e:
-                result = {"status": "error", "message": f"Tool execution failed: {e}"}
+            # B3: Validate required args before dispatch for clear error messages.
+            validation_error = _validate_required_args(tool_name, arguments)
+            if validation_error:
+                result = validation_error
+            else:
+                try:
+                    result = handler(arguments)
+                except ValueError as e:
+                    result = {"status": "error", "message": str(e)}
+                except Exception as e:
+                    result = {"status": "error", "message": f"Tool execution failed: {e}"}
         else:
             result = {"status": "error", "message": f"Unknown tool: {tool_name}"}
 

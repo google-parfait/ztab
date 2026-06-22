@@ -1,11 +1,9 @@
 load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
-load(":model_targets.bzl", "ztab_model_targets")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -24,6 +22,7 @@ config_setting(
 proto_library(
     name = "session_manager_proto",
     srcs = ["session_manager.proto"],
+    strip_import_prefix = "",
 )
 
 cc_proto_library(
@@ -142,13 +141,15 @@ cc_library(
     ],
 )
 
-# Policy Registry (built-in policy classes with prompt templates)
+# Policy Registry (dynamic policy loading from JSON files)
 cc_library(
     name = "policy_registry",
     srcs = ["policy_registry.cc"],
     hdrs = ["policy_registry.h"],
     deps = [
+        "@nlohmann_json//:json",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -203,48 +204,11 @@ cc_binary(
     ],
 )
 
-# --- OCI Image Packaging (Dockerfile-less builds) ---
+# --- Binary Packaging (used by //gcp:BUILD for OCI image assembly) ---
 
 # Binary layer: packages ztab_server into a tar for OCI image layering.
 pkg_tar(
     name = "ztab_server_tar",
     srcs = [":ztab_server"],
     include_runfiles = True,
-)
-
-# Echo-only image (no model weights — for quick testing).
-oci_image(
-    name = "ztab_server_echo_oci_image",
-    base = "@distroless_cc_debian12_base",
-    cmd = ["--attestation_provider=mock", "--port=8000"],
-    entrypoint = ["/ztab_server"],
-    exposed_ports = ["8000/tcp"],
-    tars = [":ztab_server_tar"],
-)
-
-oci_load(
-    name = "ztab_server_echo_tarball",
-    image = ":ztab_server_echo_oci_image",
-    repo_tags = ["ztab-server-echo:latest"],
-)
-
-# Per-model GCP server container targets.
-# Each call generates: model_layer_{name}, oci_image, oci_load, and load_runner
-# for 2 deployment variants (local, gcp).
-ztab_model_targets(
-    model_name = "gemma4_e2b",
-    weights_filename = "gemma-4-E2B_q4_0-it.gguf",
-    weights_label = "@gemma4_e2b_weights//:gemma-4-E2B_q4_0-it.gguf",
-)
-
-ztab_model_targets(
-    model_name = "gemma4_e4b",
-    weights_filename = "gemma-4-E4B-it-Q4_K_M.gguf",
-    weights_label = "@gemma4_e4b_weights//:gemma-4-E4B-it-Q4_K_M.gguf",
-)
-
-ztab_model_targets(
-    model_name = "gemma4_31b",
-    weights_filename = "gemma-4-31B-it-Q4_K_M.gguf",
-    weights_label = "@gemma4_31b_weights//:gemma-4-31B-it-Q4_K_M.gguf",
 )

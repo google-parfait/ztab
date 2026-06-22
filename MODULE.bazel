@@ -33,7 +33,7 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.9.4")
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 http_archive(
     name = "llama_cpp",
-    build_file = "//third_party/llama_cpp:llama_cpp.BUILD.bzl",
+    build_file = "//tee/third_party/llama_cpp:llama_cpp.BUILD.bzl",
     strip_prefix = "llama.cpp-98d2d2884e28ca8718774caad691ddd525f2f7b2",
     url = "https://github.com/ggml-org/llama.cpp/archive/98d2d2884e28ca8718774caad691ddd525f2f7b2.tar.gz",
 )

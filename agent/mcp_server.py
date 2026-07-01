@@ -125,6 +125,11 @@ def _get_backends():
             # Config changed after initial load — flush stale channels
             print(f"[ztab] backends.json changed, reloading and flushing channel cache",
                   file=sys.stderr)
+            for channel, _ in _CHANNEL_CACHE.values():
+                try:
+                    channel.close()
+                except Exception:
+                    pass
             _CHANNEL_CACHE.clear()
         _backends_config = new_config
         _backends_mtime_ns = st.st_mtime_ns

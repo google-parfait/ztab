@@ -149,7 +149,7 @@ os.replace(tmp, '${BACKENDS_FILE}')
 fi
 
 # --- Install Mode ---
-VENV_PATH="${VENV_PATH:-${VENV_PATH:-$HOME/.ztab-venv}}"
+VENV_PATH="${VENV_PATH:-$HOME/.ztab-venv}"
 # Ensure absolute path using python (portable across Linux/macOS)
 VENV_PATH=$(python3 -c "import os, sys; print(os.path.abspath(sys.argv[1]))" "$VENV_PATH")
 # Ensure we know where the mcp_server.py is relative to this script

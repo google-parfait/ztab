@@ -21,7 +21,7 @@ to the cloud infrastructure provider.
 ### 1.2 Motivating Problem
 
 Autonomous agents are moving from simple information retrieval to
-high-stakes economic activity — payments, contracts, negotiations,
+high-stakes economic activity like payments, contracts, negotiations,
 and joint decision-making. This creates a **trust ceiling**: there is
 currently no neutral environment where agents from mutually distrustful
 entities can securely exchange sensitive data, verify commitments, or
@@ -31,7 +31,7 @@ All existing solutions secure **bilateral** relationships — one agent
 talking to one tool or platform. But real-world coordination requires
 **multilateral** interactions where private data from multiple parties
 must be pooled and reasoned over, without any party seeing another's
-raw inputs — and without trusting the infrastructure operator.
+raw inputs, and without trusting the infrastructure operator.
 
 Existing approaches each fall short:
 
@@ -152,7 +152,7 @@ it would itself need to be attested — creating a recursive trust
 problem. By running locally as part of the agent's client stack,
 the MCP server is within the agent's own trust boundary.
 
-### 2.5 Why gRPC (Client-to-TEE Protocol Selection)
+### 2.2 Why gRPC (Client-to-TEE Protocol Selection)
 
 The protocol between the agent client library and the TEE server was
 selected from three candidates:
@@ -266,7 +266,7 @@ keys — re-verifying attestation per RPC would be cryptographically
 redundant (see `attestation_architecture_investigation.md` §3 for the
 full analysis).
 
-### 2.2 Component Inventory
+### 2.5 Component Inventory
 
 | Component | Language | Location | Description |
 | :--- | :--- | :--- | :--- |
@@ -661,17 +661,17 @@ Sessions follow a strict state machine:
 
 ### 4.3 Timeout Enforcement
 
-Timeouts are checked lazily on every RPC access, but are also proactively 
-enforced on all sessions during garbage collection sweeps to prevent resource 
+Timeouts are checked lazily on every RPC access, but are also proactively
+enforced on all sessions during garbage collection sweeps to prevent resource
 exhaustion (DoS). The timeout duration is state-dependent:
 - `OPEN` / `SEALED`: Capped at 10 minutes to prevent attackers from filling slots with unauthenticated or stalled sessions.
 - `CALCULATING`: Capped at 30 minutes to safeguard against hung LLM inference threads.
 
 **Session garbage collection:** During `CreateSession` calls, a garbage
-collection sweep actively checks all sessions for timeouts. Any session 
-that has expired is transitioned to `ABORTED`. Terminal sessions (`CLOSED`, 
-`ABORTED`) older than 1 hour are then evicted to prevent unbounded memory growth. 
-Crucially, unauthenticated or stalled sessions that abort due to a `JOIN_TIMEOUT` 
+collection sweep actively checks all sessions for timeouts. Any session
+that has expired is transitioned to `ABORTED`. Terminal sessions (`CLOSED`,
+`ABORTED`) older than 1 hour are then evicted to prevent unbounded memory growth.
+Crucially, unauthenticated or stalled sessions that abort due to a `JOIN_TIMEOUT`
 or `INPUT_TIMEOUT` are evicted **immediately**, bypassing the 1-hour wait.
 
 **Global resource limits (DoS prevention):**
@@ -875,25 +875,25 @@ cross-model security audit (15 findings total, all resolved):
 
 **Critical findings:**
 
-- **F1 — Attestation Bypass via Tool Configuration (CRITICAL):**
+- **Attestation Bypass via Tool Configuration (CRITICAL):**
   The original `_resolve_verifier()` allowed an `explicit_verifier`
   parameter to override auto-detection. A prompt injection attack
   could pass `verifier="noop"` to bypass RA-TLS for remote hosts.
   **Fix:** Remote hosts always enforce `ita` regardless of agent
   requests. Override only honored for `localhost`.
-- **F6 — Weak Random Hex Generation:** Session IDs and tokens used
+- **Weak Random Hex Generation:** Session IDs and tokens used
   `std::mt19937` (not a CSPRNG). **Fix:** Replaced with BoringSSL's
   `RAND_bytes()` for cryptographically secure 256-bit tokens.
 
 **High findings:**
 
-- **F2 — Session Enumeration:** Different error messages for
+- **Session Enumeration:** Different error messages for
   "not found" vs. "full" leaked session existence. **Fix:** Uniform
   `PERMISSION_DENIED` for all auth failures.
-- **F3 — False Positive Test Exits:** `check_agent_done()` returned
+- **False Positive Test Exits:** `check_agent_done()` returned
   success even on ABORTED sessions. **Fix:** Three-outcome model
   (PASSED/FAILED/INCOMPLETE).
-- **F4 — JSON Schema FullMatch vs. PartialMatch:** `RE2::FullMatch`
+- **JSON Schema FullMatch vs. PartialMatch:** `RE2::FullMatch`
   deviated from JSON Schema spec (ECMA 262). **Fix:** Switched to
   `RE2::PartialMatch`.
 
@@ -1059,7 +1059,7 @@ Backends security boundary specifically protects against
 LLM to connect to an attacker-controlled server.
 
 **Programmatic configuration:** The `install_mcp.sh` installer script
-acccepts `--add-backend` flags as a convenience alternative to
+accepts `--add-backend` flags as a convenience alternative to
 manually editing `backends.json`. This allows automated setup scripts
 and agent bootstrapping flows to register backends without requiring
 JSON file manipulation.

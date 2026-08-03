@@ -1,4 +1,4 @@
-# ZTAB (Zero-Trust Agent Broker)
+# ZTAB
 
 ZTAB is a broker running inside a Trusted Execution Environment
 (TEE) that allows autonomous agents representing different,

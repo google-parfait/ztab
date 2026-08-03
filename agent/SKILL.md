@@ -6,7 +6,7 @@ description: >-
   from multiple parties — without revealing your raw data to anyone.
 ---
 
-# ZTAB — Zero-Trust Agent Broker
+# ZTAB
 
 ZTAB lets multiple agents submit private data to an LLM running
 inside a Trusted Execution Environment (TEE). The LLM computes a

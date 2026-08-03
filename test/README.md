@@ -1,7 +1,7 @@
 # ZTAB Test Infrastructure
 
-This directory contains the testing infrastructure for the Zero-Trust Agent
-Bootstrap (ZTAB) project. It is structured into different levels to verify
+This directory contains the testing infrastructure for ZTAB.
+It is structured into different levels to verify
 components in isolation before running full end-to-end tests.
 
 ## Test Levels

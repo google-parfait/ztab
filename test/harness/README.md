@@ -1,6 +1,6 @@
 # ZTAB Unified Cold-Start Test Harness
 
-This directory contains the Zero-Trust Agent Bootstrap (ZTAB) end-to-end test
+This directory contains the ZTAB end-to-end test
 harness. The harness simulates an external developer setting up the ZTAB MCP
 server on an agent, configuring it to target a Trusted Execution Environment
 (TEE) server, and executing a multi-agent calendar scheduling session lifecycle.

@@ -559,7 +559,7 @@ participant inputs) into an in-memory Aho-Corasick Trie for
 single-pass stream scanning of LLM output. This is a non-neural,
 deterministic mechanism chosen for predictability and auditability
 over ML-based classifiers. Policies can declare `exempt_fields` to
-whitelist public identifiers (e.g., city names, standard nomenclature)
+allowlist public identifiers (e.g., city names, standard nomenclature)
 that should not trigger false-positive leakage alerts.
 
 **Semantic leakage — a fundamental limitation:** Semantic leakage —

@@ -31,10 +31,11 @@ cd "${SCRIPT_DIR}/.."
 
 MODEL=""
 PORT=8000
-GPU_ARGS=""
+GPU_ARGS=()
 DETACHED=""
 GCS_BUCKET=""
 POLICY_DIR=""
+CREATOR_TOKEN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,11 +44,13 @@ while [[ $# -gt 0 ]]; do
     --model=*) MODEL="${1#*=}"; shift ;;
     --port)    PORT="$2"; shift 2 ;;
     --port=*)  PORT="${1#*=}"; shift ;;
-    --gpu)         GPU_ARGS="--gpus all"; shift ;;
+    --gpu)         GPU_ARGS=("--gpus" "all"); shift ;;
     --gcs_bucket)  GCS_BUCKET="$2"; shift 2 ;;
     --gcs_bucket=*) GCS_BUCKET="${1#*=}"; shift ;;
     --policy_dir)  POLICY_DIR="$2"; shift 2 ;;
     --policy_dir=*) POLICY_DIR="${1#*=}"; shift ;;
+    --creator_token)  CREATOR_TOKEN="$2"; shift 2 ;;
+    --creator_token=*) CREATOR_TOKEN="${1#*=}"; shift ;;
     -d)            DETACHED="-d"; shift ;;
     *)
       if [[ "$1" == "llm" ]]; then
@@ -56,7 +59,7 @@ while [[ $# -gt 0 ]]; do
         shift
       elif [[ "$1" == "gpu" ]]; then
         echo "WARNING: Positional argument 'gpu' is deprecated. Please use '--gpu'." >&2
-        GPU_ARGS="--gpus all"
+        GPU_ARGS=("--gpus" "all")
         shift
       elif [[ "$1" =~ ^[0-9]+$ ]]; then
         echo "WARNING: Positional argument for port is deprecated. Please use '--port $1'." >&2
@@ -129,20 +132,32 @@ fi
 echo ""
 echo "==> Starting server on port ${PORT}..."
 # Build Docker run args.
-DOCKER_EXTRA_ARGS=""
+DOCKER_EXTRA_ARGS=()
 if [[ -n "${POLICY_DIR}" ]]; then
   # Mount policy directory into the container and pass --policy_dir.
   POLICY_DIR_ABS="$(cd "${POLICY_DIR}" && pwd)"
-  DOCKER_EXTRA_ARGS="-v ${POLICY_DIR_ABS}:/policies:ro"
+  DOCKER_EXTRA_ARGS+=("-v" "${POLICY_DIR_ABS}:/policies:ro")
+fi
+
+# Inject creator_token as an environment variable so the container's
+# default CMD (--policy_dir, --port, --model_path, etc.) is preserved.
+# The server binary reads CREATOR_TOKEN from the environment via
+# std::getenv("CREATOR_TOKEN") fallback in main.cc.
+if [[ -n "${CREATOR_TOKEN}" ]]; then
+  DOCKER_EXTRA_ARGS+=("-e" "CREATOR_TOKEN=${CREATOR_TOKEN}")
 fi
 
 if [[ "${DETACHED}" == "-d" ]]; then
-  docker run --rm -d -p "${PORT}:8000" ${GPU_ARGS} ${DOCKER_EXTRA_ARGS} \
+  docker run --rm -d -p "${PORT}:8000" \
+    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
+    ${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"} \
     --name "${CONTAINER_NAME}" "${DOCKER_TAG}"
   echo "Server is running in background. Logs:"
   echo "  docker logs -f ${CONTAINER_NAME}"
 else
   echo "Press Ctrl+C to stop the server."
-  docker run --rm -p "${PORT}:8000" ${GPU_ARGS} ${DOCKER_EXTRA_ARGS} \
+  docker run --rm -p "${PORT}:8000" \
+    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
+    ${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"} \
     --name "${CONTAINER_NAME}" "${DOCKER_TAG}"
 fi

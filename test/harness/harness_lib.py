@@ -100,7 +100,7 @@ def get_discovered_http_port(workspace_id, gemini_dir, timeout=15):
 CONNECT_SERVICE_PATH = "/exa.language_server_pb.LanguageServerService/"
 
 
-def ls_request(port, csrf_token, rpc_name, body):
+def ls_request(port, csrf_token, rpc_name, body, timeout=30):
   """Make a Connect-protocol JSON request to the LS.
 
   Args:
@@ -108,6 +108,7 @@ def ls_request(port, csrf_token, rpc_name, body):
     csrf_token: CSRF token for LS authentication.
     rpc_name: Name of the LS RPC to call.
     body: Request body dict.
+    timeout: Socket timeout in seconds (default 30).
 
   Returns:
     Parsed JSON response dict.
@@ -124,7 +125,7 @@ def ls_request(port, csrf_token, rpc_name, body):
       method="POST",
   )
   try:
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
       return json.loads(resp.read().decode("utf-8"))
   except urllib.error.HTTPError as e:
     body_text = e.read().decode("utf-8", errors="replace")
@@ -605,10 +606,10 @@ def extract_field_from_step(step, field_name, tool_names, search_args,
   return None
 
 
-def extract_session_id(step, tool_names, search_args, search_response):
-  """Extracts session_id from a ZTAB MCP step.
+def extract_invitation_token(step, tool_names, search_args, search_response):
+  """Extracts invitation_token from a ZTAB MCP step.
 
-  Convenience wrapper around extract_field_from_step for session_id.
+  Convenience wrapper around extract_field_from_step for invitation_token.
 
   Args:
     step: The trajectory step dict.
@@ -618,8 +619,12 @@ def extract_session_id(step, tool_names, search_args, search_response):
     search_response: If True, searches the tool response (result).
   """
   return extract_field_from_step(
-      step, "session_id", tool_names, search_args, search_response
+      step, "invitation_token", tool_names, search_args, search_response
   )
+
+
+# Backward compatibility alias.
+extract_session_id = extract_invitation_token
 
 
 def format_and_print_step(step, label, step_idx):

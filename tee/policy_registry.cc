@@ -76,22 +76,19 @@ absl::Status PolicyRegistry::LoadFromDirectory(const std::string& dir_path) {
     // Validate required fields.
     if (!doc.contains("policy_class") || !doc["policy_class"].is_string()) {
       closedir(dir);
-      return absl::InvalidArgumentError(
-          absl::StrCat("Missing or invalid 'policy_class' in '", filepath,
-                       "'"));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Missing or invalid 'policy_class' in '", filepath, "'"));
     }
     if (!doc.contains("prompt_template") ||
         !doc["prompt_template"].is_string()) {
       closedir(dir);
-      return absl::InvalidArgumentError(
-          absl::StrCat("Missing or invalid 'prompt_template' in '", filepath,
-                       "'"));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Missing or invalid 'prompt_template' in '", filepath, "'"));
     }
     if (!doc.contains("input_schema") || !doc["input_schema"].is_object()) {
       closedir(dir);
-      return absl::InvalidArgumentError(
-          absl::StrCat("Missing or invalid 'input_schema' in '", filepath,
-                       "'"));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Missing or invalid 'input_schema' in '", filepath, "'"));
     }
 
     std::string policy_class = doc["policy_class"].get<std::string>();
@@ -100,9 +97,8 @@ absl::Status PolicyRegistry::LoadFromDirectory(const std::string& dir_path) {
     if (policies_.contains(policy_class)) {
       closedir(dir);
       return absl::AlreadyExistsError(
-          absl::StrCat("Duplicate policy_class '", policy_class,
-                       "' found in '", filepath,
-                       "'. Each policy_class must be unique."));
+          absl::StrCat("Duplicate policy_class '", policy_class, "' found in '",
+                       filepath, "'. Each policy_class must be unique."));
     }
 
     // Build PolicyDefinition.
@@ -140,9 +136,9 @@ absl::StatusOr<const PolicyDefinition*> PolicyRegistry::GetPolicy(
       if (!available.empty()) available += ", ";
       available += name;
     }
-    return absl::NotFoundError(
-        absl::StrCat("Unknown policy class: '", policy_class,
-                     "'. Available: ", available.empty() ? "(none)" : available));
+    return absl::NotFoundError(absl::StrCat(
+        "Unknown policy class: '", policy_class,
+        "'. Available: ", available.empty() ? "(none)" : available));
   }
   return &it->second;
 }

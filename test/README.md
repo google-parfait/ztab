@@ -19,17 +19,26 @@ server, and they do not require an active Language Server.
     expected structured outputs. It formats the prompt with test inputs and
     sends it directly to the TEE server's Echo RPC.
 *   **Session Lifecycle Test (`test_session.py`)**:
-    Verifies the TEE server's state machine, input aggregation, and policy
-    enforcement. It drives the session lifecycle (create, join, submit, get
-    result) using direct gRPC calls.
+    Verifies the TEE server's state machine, input
+    aggregation, and policy enforcement. It drives the
+    session lifecycle (create, join, submit, get result)
+    using direct gRPC calls. Supports `--test_admission`
+    mode for 11 additional admission control tests (token
+    gating, rejection, idempotency).
+*   **Agent Unit Test (`test_agent_unit.py`)**:
+    Verifies agent-side components: verifier factory,
+    backends.json parsing, MCP tool registration, channel
+    caching, and creator_token injection. 9 unit tests.
 
 ### Level 2: End-to-End Harness Tests (`test/harness/`)
 
 *   **Cold-Start Test Harness (`test_cold_start.sh`)**:
-    This is the production-fidelity end-to-end test. It launches the actual
-    Language Server, provisions isolated agent sandboxes, installs the ZTAB MCP
-    server dynamically, and monitors the real agents as they coordinate and
-    execute the session lifecycle using MCP tools.
+    This is the production-fidelity end-to-end test. It
+    launches the actual Language Server, provisions
+    isolated agent sandboxes, installs the ZTAB MCP server
+    dynamically, and monitors the real agents as they
+    coordinate and execute the session lifecycle using MCP
+    tools.
 
     For detailed E2E testing instructions, see
     [test/harness/README.md](harness/README.md).
@@ -38,8 +47,8 @@ server, and they do not require an active Language Server.
 
 ## Component-Level Usage (Level 1)
 
-These component tests are fast to execute and useful for quick validation of
-prompt templates or TEE server changes.
+These component tests are fast to execute and useful for
+quick validation of prompt templates or TEE server changes.
 
 ### 1. Run Prompt Quality Test
 
@@ -61,6 +70,15 @@ Requires a running TEE server:
 python3 -m test.test_session \
     --scenario examples.calendar.scenario:CalendarScenario \
     --host localhost --port 8000 --verifier noop
+```
+
+### 3. Run Session Lifecycle Test with Admission Control
+
+```bash
+python3 -m test.test_session \
+    --scenario examples.calendar.scenario:CalendarScenario \
+    --host localhost --port 8000 --verifier noop \
+    --test_admission --creator_token SECRET
 ```
 
 ---

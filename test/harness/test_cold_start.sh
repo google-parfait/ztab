@@ -18,20 +18,20 @@
 # ==============================================================================
 # Usage:
 #   1-agent bootstrap test (local native, fast):
-#     ./test_cold_start.sh --ztab_dir ~/ztab1/ztab --num_agents 1
+#     ./test_cold_start.sh --ztab_dir <path_to_ztab> --num_agents 1
 #
 #   2-agent session test (local native, fast):
-#     ./test_cold_start.sh --ztab_dir ~/ztab1/ztab --num_agents 2
+#     ./test_cold_start.sh --ztab_dir <path_to_ztab> --num_agents 2
 #
 #   Docker LLM mode (production-fidelity):
-#     ./test_cold_start.sh --ztab_dir ~/ztab1/ztab --tee_mode docker_build
+#     ./test_cold_start.sh --ztab_dir <path_to_ztab> --tee_mode docker_build
 #
 #   Connect to GCP Confidential Space VM with real attestation:
-#     ./test_cold_start.sh --ztab_dir ~/ztab1/ztab --tee_mode connect \
+#     ./test_cold_start.sh --ztab_dir <path_to_ztab> --tee_mode connect \
 #       --host <IP> --port 8000 --verifier ita
 #
 #   Auto-discover GCP VM via gcloud:
-#     ./test_cold_start.sh --ztab_dir ~/ztab1/ztab --tee_mode gcp_discover \
+#     ./test_cold_start.sh --ztab_dir <path_to_ztab> --tee_mode gcp_discover \
 #       --gcp_project X --gcp_zone Y --verifier ita
 #
 # TEE Modes (--tee_mode):
@@ -81,6 +81,7 @@ AUDIT_NON_BLOCKING=0  # --audit-non-blocking: audit failures become warnings
 AUDIT_FAILED=0        # set by run_trajectory_audit if audit fails
 PHASE1_ONLY=0         # --phase1-only: only run install phase, skip session lifecycle
 DIRTY_BATTERY=0       # --dirty-state-battery: run D-series dirty state tests after normal run
+CREATOR_TOKEN=""      # --creator_token: pre-shared token for gated CreateSession
 AGENT_IDS=""          # Phase 1 cascade IDs (set by trigger_agents)
 PHASE2_IDS=""         # Phase 2 cascade IDs (set by trigger_agents, may be empty)
 
@@ -190,6 +191,8 @@ setup_env() {
       --audit-non-blocking) AUDIT_NON_BLOCKING=1; shift ;;
       --phase1-only) PHASE1_ONLY=1; shift ;;
       --dirty-state-battery) DIRTY_BATTERY=1; shift ;;
+      --creator_token) CREATOR_TOKEN="$2"; shift 2 ;;
+      --creator_token=*) CREATOR_TOKEN="${1#*=}"; shift ;;
       --app_data_dir) APP_DATA_DIR="$2"; shift 2 ;;
       --app_data_dir=*) APP_DATA_DIR="${1#*=}"; shift ;;
       --ls_extra_flags) LS_EXTRA_FLAGS="$2"; shift 2 ;;
@@ -234,6 +237,7 @@ Flags:
   --audit-non-blocking  Audit failures become warnings (don't fail the test)
   --phase1-only         Only run Phase 1 (install), skip session lifecycle
   --dirty-state-battery Run D-series dirty state tests after normal run
+  --creator_token TOKEN Pre-shared token for gated CreateSession (admission control)
 EOF
         exit 0
         ;;
@@ -244,9 +248,9 @@ EOF
 
   # --- Validate required args ---
   if [[ -z "$ZTAB_DIR" ]]; then
-    echo "ERROR: --ztab_dir is required." >&2
-    exit 1
+    ZTAB_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
   fi
+  export ZTAB_DIR
 
   # B.4: Default LS_BIN to /usr/local/bin/language_server (populated by Dockerfile)
   if [[ -z "$LS_BIN" ]]; then
@@ -434,17 +438,22 @@ EOF
 # Start TEE via Docker (OCI container via run_server.sh)
 start_tee_docker() {
   local port="$1"
-  local extra_args="$2"
+  shift
+  local extra_args=("$@")
   local container_name="ztab-server"
 
   # Determine timeout based on mode
   local timeout_secs=120
-  if [[ "$extra_args" == *"--llm"* ]]; then
-    timeout_secs=600  # LLM mode: OCI build + GCS download + model load
-  fi
+  for arg in "${extra_args[@]}"; do
+    if [[ "$arg" == "--llm" ]]; then
+      timeout_secs=600  # LLM mode: OCI build + GCS download + model load
+      break
+    fi
+  done
 
   # Start via run_server.sh
-  (cd "$ZTAB_DIR" && bash tee/run_server.sh --port "$port" $extra_args \
+  (cd "$ZTAB_DIR" && bash tee/run_server.sh --port "$port" \
+    "${extra_args[@]}" \
     > "$RUN_DIR/tee_server.log" 2>&1) &
   TEE_BUILD_PID=$!
 
@@ -503,6 +512,13 @@ start_tee_native() {
   log "  Binary: $TEE_BIN"
 
   log "Starting TEE server (native, model=$MODEL_PATH)..."
+  local creator_flag=""
+  if [[ -n "$CREATOR_TOKEN" ]]; then
+    creator_flag="--creator_token=$CREATOR_TOKEN"
+    log "  Admission control: GATED (creator_token set)"
+  else
+    log "  Admission control: UNGATED (no creator_token)"
+  fi
   nohup "$TEE_BIN" \
     --attestation_provider=mock \
     --port="$port" \
@@ -510,6 +526,7 @@ start_tee_native() {
     --model_path="$MODEL_PATH" \
     --gpu_layers=0 \
     --policy_dir="$ZTAB_DIR/examples/calendar/" \
+    $creator_flag \
     > /tmp/ztab_tee_session_server.log 2>&1 &
   TEE_NATIVE_PID=$!
   STARTED_TEE_NATIVE=1
@@ -610,7 +627,14 @@ setup_tee_server() {
     sleep 1
 
     if [[ "$TEE_MODE" == "docker_build" ]]; then
-      start_tee_docker "$TEE_PORT" "--llm --gcs_bucket $GCS_BUCKET --policy_dir $ZTAB_DIR/examples/calendar/"
+      local docker_creator_args=()
+      if [[ -n "$CREATOR_TOKEN" ]]; then
+        docker_creator_args=("--creator_token" "$CREATOR_TOKEN")
+      fi
+      start_tee_docker "$TEE_PORT" \
+        --llm --gcs_bucket "$GCS_BUCKET" \
+        --policy_dir "$ZTAB_DIR/examples/calendar/" \
+        ${docker_creator_args[@]+"${docker_creator_args[@]}"}
     elif [[ "$TEE_MODE" == "local_build" ]]; then
       start_tee_native "$TEE_PORT"
     fi
@@ -762,6 +786,11 @@ trigger_agents() {
     phase_flag="--phase1_only"
   fi
 
+  local creator_trigger_flag=""
+  if [[ -n "$CREATOR_TOKEN" ]]; then
+    creator_trigger_flag="--creator_token $CREATOR_TOKEN"
+  fi
+
   TRIGGER_OUT=$(python3 "$SCRIPT_DIR/trigger_session_test.py" \
     --ports "$ports_csv" \
     --csrf_token "$STATIC_TOKEN" \
@@ -776,6 +805,7 @@ trigger_agents() {
     --num_agents "$NUM_AGENTS" \
     $verifier_flags \
     $phase_flag \
+    $creator_trigger_flag \
     2>&1) || true
   echo "$TRIGGER_OUT" > "$RUN_DIR/trigger.log"
   # Extract conversation IDs from trigger output (JSON on last line)
@@ -833,7 +863,14 @@ poll_results() {
     log "  Using Phase 2 cascade IDs for monitoring"
   fi
 
-  python3 "$SCRIPT_DIR/monitor_session_test.py" \
+  # Use agent 1's venv python for the monitor — it needs grpc.
+  local monitor_python="python3"
+  local agent1_venv="$RUN_DIR/agents/1/home/.ztab-venv/bin/python3"
+  if [[ -x "$agent1_venv" ]]; then
+    monitor_python="$agent1_venv"
+  fi
+
+  "$monitor_python" "$SCRIPT_DIR/monitor_session_test.py" \
     --ports "$ports_csv" \
     --csrf_token "$STATIC_TOKEN" \
     --agent_ids "$monitor_ids" \
@@ -863,6 +900,10 @@ run_trajectory_audit() {
   if [[ -n "$REUSE_DIR" ]]; then
     audit_reuse_flag="--reuse_run --expected_host $TEE_HOST --expected_port $TEE_PORT"
   fi
+  local audit_creator_flag=""
+  if [[ -n "$CREATOR_TOKEN" ]]; then
+    audit_creator_flag="--creator_token $CREATOR_TOKEN"
+  fi
   set +o pipefail
   python3 "$SCRIPT_DIR/audit_trajectory.py" \
     --run_dir "$RUN_DIR" \
@@ -871,6 +912,7 @@ run_trajectory_audit() {
     $audit_phase_flag \
     $audit_reuse_flag \
     $audit_verifier_flag \
+    $audit_creator_flag \
     2>&1 | tee -a "$RUN_DIR/audit.log"
   AUDIT_EXIT=${PIPESTATUS[0]}
   set -o pipefail
@@ -948,6 +990,10 @@ if [[ $DIRTY_BATTERY -eq 1 ]]; then
 
       # Run audit with --reuse_run
       log "  Running reuse-run audit..."
+      local d_creator_flag=""
+      if [[ -n "$CREATOR_TOKEN" ]]; then
+        d_creator_flag="--creator_token $CREATOR_TOKEN"
+      fi
       python3 "$SCRIPT_DIR/audit_trajectory.py" \
         --run_dir "$RUN_DIR" \
         --num_agents "$NUM_AGENTS" \
@@ -957,6 +1003,7 @@ if [[ $DIRTY_BATTERY -eq 1 ]]; then
         --expected_host "$TEE_HOST" \
         --expected_port "$TEE_PORT" \
         --expected_verifier "$expected_verifier" \
+        $d_creator_flag \
         2>&1 | tee -a "$RUN_DIR/d${d_id}_audit.log" || true
       local d_exit=${PIPESTATUS[0]}
 

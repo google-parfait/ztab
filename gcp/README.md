@@ -17,7 +17,7 @@ parameters are provided via flags.
 
 ```bash
 gcp/build_and_push.sh \
-    --ztab_dir ~/ztab1/ztab \
+    --ztab_dir $(pwd) \
     --image_base us-docker.pkg.dev/myproject/myrepo/ztab-server \
     --gcs_bucket gs://my-model-weights \
     --model gemma4_e4b
@@ -59,7 +59,7 @@ Create a wrapper script that provides your project's defaults:
 
 ```bash
 #!/bin/bash
-ZTAB_DIR="${ZTAB_DIR:-$HOME/ztab1/ztab}"
+ZTAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 exec "${ZTAB_DIR}/gcp/launch.sh" \
     --project myproject \
     --zone us-east5-a \

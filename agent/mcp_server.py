@@ -25,6 +25,7 @@ import base64
 import json
 import os
 import sys
+import uuid
 
 # CRITICAL: Save the real stdout for JSON-RPC protocol output, then redirect
 # sys.stdout to stderr. This prevents print() calls in client.py and grpcio
@@ -46,6 +47,10 @@ import session_manager_pb2_grpc
 SERVER_NAME = "ztab"
 SERVER_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2024-11-05"
+
+# Sentinel for handle_request: distinguishes "unknown method"
+# from "notification with no response" (which returns None).
+_NOT_HANDLED = object()
 
 
 # --- Backend Configuration Loading ---
@@ -193,7 +198,7 @@ TOOLS = [
         "name": "ztab_create_session",
         "description": (
             "Create a new multi-agent session on the ZTAB TEE server. "
-            "Returns a session_id (to share with other participants) and "
+            "Returns an invitation_token (to share with other participants) and "
             "a participant_token (secret, for your own use in subsequent RPCs). "
             "The creator automatically counts as one participant."
         ),
@@ -220,18 +225,19 @@ TOOLS = [
     {
         "name": "ztab_join_session",
         "description": (
-            "Join an existing session on the ZTAB TEE server. Returns the "
+            "Join an existing session on the ZTAB TEE server using an "
+            "invitation_token received from the session creator. Returns the "
             "session policy for review and a participant_token for subsequent RPCs. "
             "After reviewing the policy, call ztab_accept_policy."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session ID to join"},
+                "invitation_token": {"type": "string", "description": "Invitation token received from session creator"},
                 "role": {"type": "string", "description": "Role for role-based policies (Phase 2+)"},
                 "backend": {"type": "string", "description": "Backend ID to use (optional)"},
             },
-            "required": ["session_id"],
+            "required": ["invitation_token"],
         },
     },
     {
@@ -244,11 +250,10 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
                 "participant_token": {"type": "string", "description": "Your participant token"},
                 "backend": {"type": "string", "description": "Backend ID to use (optional)"},
             },
-            "required": ["session_id", "participant_token"],
+            "required": ["participant_token"],
         },
     },
     {
@@ -261,7 +266,6 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
                 "participant_token": {"type": "string", "description": "Your participant token"},
                 "input_json": {
                     "type": "string",
@@ -269,7 +273,7 @@ TOOLS = [
                 },
                 "backend": {"type": "string", "description": "Backend ID to use (optional)"},
             },
-            "required": ["session_id", "participant_token", "input_json"],
+            "required": ["participant_token", "input_json"],
         },
     },
     {
@@ -282,11 +286,10 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
                 "participant_token": {"type": "string", "description": "Your participant token"},
                 "backend": {"type": "string", "description": "Backend ID to use (optional)"},
             },
-            "required": ["session_id", "participant_token"],
+            "required": ["participant_token"],
         },
     },
     {
@@ -298,11 +301,10 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session ID"},
                 "participant_token": {"type": "string", "description": "Your participant token"},
                 "backend": {"type": "string", "description": "Backend ID to use (optional)"},
             },
-            "required": ["session_id", "participant_token"],
+            "required": ["participant_token"],
         },
     },
 ]
@@ -343,7 +345,7 @@ def _get_stub(host, port, verifier_name="noop", expected_digest=None, allow_debu
 
 
 def _get_cached_stub(arguments):
-    """Return a cached (channel, stub) for the resolved backend.
+    """Return a cached (channel, stub, backend_info) for the resolved backend.
 
     Creates a new connection on first call for each backend_id, then reuses
     it for all subsequent calls. If a call fails with UNAVAILABLE (stale
@@ -364,7 +366,8 @@ def _get_cached_stub(arguments):
         _CHANNEL_CACHE[bid] = (channel, stub)
         print(f"[ztab] Channel created for backend '{bid}'", file=sys.stderr)
 
-    return _CHANNEL_CACHE[bid]
+    channel, stub = _CHANNEL_CACHE[bid]
+    return channel, stub, backend
 
 
 def _evict_backend(arguments):
@@ -453,34 +456,71 @@ def run_connectivity_test(host, port, message, verifier_name="noop",
 
 def run_create_session(arguments):
     """Create a new session."""
-    channel, stub = _get_cached_stub(arguments)
+    channel, stub, backend_info = _get_cached_stub(arguments)
     try:
         policy = session_manager_pb2.SessionPolicy(
             policy_class=arguments["policy_class"],
-            expected_participants=int(arguments["expected_participants"]),
-            timeout_seconds=int(arguments.get("timeout_seconds", 300)),
+            expected_participants=int(
+                arguments["expected_participants"]
+            ),
+            timeout_seconds=int(
+                arguments.get("timeout_seconds", 300)
+            ),
         )
-        response = stub.CreateSession(session_manager_pb2.CreateSessionRequest(policy=policy))
+        metadata = []
+        creator_token = backend_info.get(
+            'creator_token', ''
+        )
+        if creator_token:
+            metadata.append(
+                ('x-ztab-creator-token', creator_token)
+            )
+        request = session_manager_pb2.CreateSessionRequest(
+            policy=policy,
+            # Auto-generate nonce for idempotent retry safety.
+            # Agents don't need to know about this.
+            client_nonce=arguments.get(
+                "client_nonce", str(uuid.uuid4())
+            ),
+        )
+        response = stub.CreateSession(
+            request, metadata=metadata or None
+        )
         return {
             "status": "success",
-            "session_id": response.session_id,
-            "state": session_manager_pb2.SessionState.Name(response.state),
+            "invitation_token": response.invitation_token,
+            "state": session_manager_pb2.SessionState.Name(
+                response.state
+            ),
             "participant_token": response.participant_token,
-            "instructions": "Share session_id with other participants. Keep your token secret.",
+            "instructions": (
+                "Share invitation_token with other "
+                "participants. Keep your "
+                "participant_token secret."
+            ),
         }
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNAVAILABLE:
             _evict_backend(arguments)
-        return {"status": "error", "message": f"gRPC error {e.code()}: {e.details()}"}
+        return {
+            "status": "error",
+            "message": (
+                f"gRPC error {e.code()}: {e.details()}"
+            ),
+        }
 
 
 def run_join_session(arguments):
     """Join an existing session."""
-    channel, stub = _get_cached_stub(arguments)
+    channel, stub, _ = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.JoinSessionRequest(
-            session_id=arguments["session_id"],
+            invitation_token=arguments["invitation_token"],
             role=arguments.get("role", ""),
+            # Auto-generate nonce for idempotent retry safety.
+            client_nonce=arguments.get(
+                "client_nonce", str(uuid.uuid4())
+            ),
         )
         response = stub.JoinSession(request)
         return {
@@ -499,10 +539,9 @@ def run_join_session(arguments):
 
 def run_accept_policy(arguments):
     """Accept the session policy."""
-    channel, stub = _get_cached_stub(arguments)
+    channel, stub, _ = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.AcceptPolicyRequest(
-            session_id=arguments["session_id"],
             participant_token=arguments["participant_token"],
         )
         response = stub.AcceptPolicy(request)
@@ -521,10 +560,9 @@ def run_accept_policy(arguments):
 
 def run_submit_input(arguments):
     """Submit input to the session."""
-    channel, stub = _get_cached_stub(arguments)
+    channel, stub, _ = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.SubmitInputRequest(
-            session_id=arguments["session_id"],
             participant_token=arguments["participant_token"],
             input_json=arguments["input_json"],
         )
@@ -548,10 +586,9 @@ def run_submit_input(arguments):
 
 def run_get_result(arguments):
     """Get session result."""
-    channel, stub = _get_cached_stub(arguments)
+    channel, stub, _ = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.GetResultRequest(
-            session_id=arguments["session_id"],
             participant_token=arguments["participant_token"],
         )
         response = stub.GetResult(request)
@@ -576,10 +613,9 @@ def run_get_result(arguments):
 
 def run_get_session_status(arguments):
     """Get session status."""
-    channel, stub = _get_cached_stub(arguments)
+    channel, stub, _ = _get_cached_stub(arguments)
     try:
         request = session_manager_pb2.GetSessionStatusRequest(
-            session_id=arguments["session_id"],
             participant_token=arguments["participant_token"],
         )
         response = stub.GetSessionStatus(request)
@@ -639,8 +675,12 @@ TOOL_HANDLERS = {
 }
 
 
-def handle_request(method: str, params: dict) -> dict | None:
-    """Handle incoming JSON-RPC request from the agent framework."""
+def handle_request(method: str, params: dict):
+    """Handle incoming JSON-RPC request from the agent framework.
+
+    Returns a dict for successful responses, None for notifications
+    that need no response, or _NOT_HANDLED for unknown methods.
+    """
     if method == "initialize":
         return {
             "protocolVersion": PROTOCOL_VERSION,
@@ -677,7 +717,7 @@ def handle_request(method: str, params: dict) -> dict | None:
             "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
         }
 
-    return None
+    return _NOT_HANDLED
 
 
 def main():
@@ -729,11 +769,25 @@ def main():
         if msg_id is None:
             continue  # Notification, no response needed.
 
-        if result is not None:
+        if result is _NOT_HANDLED:
+            # JSON-RPC 2.0 §5.1: unknown method → -32601 Method not found.
+            # The Go MCP SDK (SEP-2575) sends server/discover as its first
+            # probe. Without an error response it blocks until timeout and
+            # kills the server process. Any error here triggers instant
+            # fallback to legacy initialize.
+            response = {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}",
+                },
+            }
+        else:
             response = {"jsonrpc": "2.0", "id": msg_id, "result": result}
-            _PROTO_OUT.write(json.dumps(response) + "\n")
-            _PROTO_OUT.flush()
-            print(f"[ztab] Sent response for method: '{method}' (id: {msg_id})", file=sys.stderr)
+        _PROTO_OUT.write(json.dumps(response) + "\n")
+        _PROTO_OUT.flush()
+        print(f"[ztab] Sent response for method: '{method}' (id: {msg_id})", file=sys.stderr)
 
 
 if __name__ == "__main__":

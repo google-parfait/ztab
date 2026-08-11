@@ -27,8 +27,7 @@ namespace ztab {
 //
 // This provider is for production use inside a Confidential Space TEE. It
 // communicates with the agent at /run/container_launcher/teeserver.sock.
-std::unique_ptr<AttestationTokenProvider>
-CreateGcpAttestationTokenProvider();
+std::unique_ptr<AttestationTokenProvider> CreateGcpAttestationTokenProvider();
 
 }  // namespace ztab
 

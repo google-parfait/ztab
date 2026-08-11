@@ -48,9 +48,9 @@ from harness_lib import get_agent_status
 from harness_lib import ls_request
 from harness_lib import STATUS_NAMES
 from harness_lib import STATUS_STR_TO_INT
-from harness_lib import extract_session_id
+from harness_lib import extract_invitation_token
 
-def wait_for_mcp_server(port, csrf_token, server_name, timeout_secs=30):
+def wait_for_mcp_server(port, csrf_token, server_name, timeout_secs=90):
   """Triggers LS config reload via RefreshMcpServers, then polls until READY.
 
   The LS McpManager has no file watcher on mcp_config.json. It only loads
@@ -58,13 +58,20 @@ def wait_for_mcp_server(port, csrf_token, server_name, timeout_secs=30):
   writes mcp_config.json, we must call RefreshMcpServers to trigger
   McpManager.Load(), then poll GetMcpServerStates to confirm the MCP server
   process is healthy before starting Phase 2 cascades.
+
+  Uses a 10s per-call socket timeout so that a single slow RPC cannot
+  exhaust the total retry budget.
   """
+  PER_CALL_TIMEOUT = 10  # seconds per ls_request call
   start_time = time.time()
-  print(f"Waiting for MCP server '{server_name}' to be READY on port {port}...", flush=True)
+  print(f"Waiting for MCP server '{server_name}' to be READY on port {port} "
+        f"(budget={timeout_secs}s, per_call={PER_CALL_TIMEOUT}s)...",
+        flush=True)
 
   # Step 1: Trigger explicit reload of mcp_config.json
   try:
-    ls_request(port, csrf_token, "RefreshMcpServers", {})
+    ls_request(port, csrf_token, "RefreshMcpServers", {},
+               timeout=PER_CALL_TIMEOUT)
     print(f"Triggered RefreshMcpServers on port {port}", flush=True)
   except Exception as e:
     print(f"WARNING: RefreshMcpServers failed: {e}. Will retry in poll loop.", flush=True)
@@ -77,11 +84,13 @@ def wait_for_mcp_server(port, csrf_token, server_name, timeout_secs=30):
       elapsed = int(time.time() - start_time)
       if elapsed > 0 and elapsed % 5 == 0:
         try:
-          refresh_resp = ls_request(port, csrf_token, "RefreshMcpServers", {})
+          refresh_resp = ls_request(port, csrf_token, "RefreshMcpServers", {},
+                                    timeout=PER_CALL_TIMEOUT)
           print(f"[{elapsed}s] Re-triggered RefreshMcpServers: {refresh_resp}", flush=True)
         except Exception as re:
           print(f"[{elapsed}s] RefreshMcpServers retry failed: {re}", flush=True)
-      resp = ls_request(port, csrf_token, "GetMcpServerStates", {})
+      resp = ls_request(port, csrf_token, "GetMcpServerStates", {},
+                        timeout=PER_CALL_TIMEOUT)
       states = resp.get("states", [])
       # Debug: log raw response every 3s
       if elapsed - last_debug >= 3:
@@ -119,16 +128,18 @@ def wait_for_mcp_server(port, csrf_token, server_name, timeout_secs=30):
   raise TimeoutError(f"Timed out waiting {timeout_secs}s for MCP server '{server_name}' to be READY")
 
 # Import calendar scenario data from the OSS repo.
-# The ZTAB_DIR env var or --ztab_dir flag points to the OSS checkout.
-_ZTAB_DIR = os.environ.get("ZTAB_DIR", os.path.expanduser("~/ztab1/ztab"))
+_HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_ZTAB_DIR = os.path.abspath(os.path.join(_HARNESS_DIR, "..", ".."))
+_ZTAB_DIR = os.environ.get("ZTAB_DIR", _DEFAULT_ZTAB_DIR)
 if _ZTAB_DIR not in sys.path:
   sys.path.insert(0, _ZTAB_DIR)
 from examples.calendar import test_data as calendar_data
 
-# Session ID extraction: The harness discovers the session_id by parsing
-# the agent's trajectory in real-time. When Agent 1 calls
-# ztab_create_session, the response contains the session_id. The harness
-# extracts it from the streamed trajectory steps (no file writes needed).
+# Invitation token extraction: The harness discovers the
+# invitation_token by parsing the agent's trajectory in real-time.
+# When Agent 1 calls ztab_create_session, the response contains
+# the invitation_token. The harness extracts it from the streamed
+# trajectory steps (no file writes needed).
 
 
 # Alias: callers inside this file use the underscore-prefixed name.
@@ -214,15 +225,15 @@ def monitor_agent_and_find_session(
 
   Streams Agent 1's trajectory steps to stderr in real-time while also:
   1. Polling the LS for agent status every 10 seconds
-  2. Extracting session_id from ztab_create_session trajectory steps
+  2. Extracting invitation_token from ztab_create_session trajectory steps
   3. Logging all status changes to $RUN_DIR/agents/1/monitor.log
   4. Early-aborting if the agent goes idle without creating a session
   5. Early-aborting if the agent errors out
 
-  Falls back to reading session_id.txt from Agent 1's sandbox if the
-  trajectory extraction misses it.
+  Falls back to reading invitation_token from Agent 1's trajectory if the
+  initial extraction misses it.
 
-  Returns: session_id (str) or None
+  Returns: invitation_token (str) or None
   """
   monitor_log_path = (
       os.path.join(run_dir, "agents", "1", "monitor.log") if run_dir else None
@@ -250,7 +261,7 @@ def monitor_agent_and_find_session(
   IDLE_GRACE_SECS = 30  # Base grace; extended dynamically by F7 timer detection
   effective_grace = IDLE_GRACE_SECS  # Initialize to prevent UnboundLocalError
 
-  session_id = None
+  invitation_token = None
   start_time = time.time()
 
   for _ in range(timeout_secs // 10):
@@ -289,22 +300,22 @@ def monitor_agent_and_find_session(
             if thoughts_log_path:
               with open(thoughts_log_path, "a") as f:
                 f.write(json.dumps(step) + "\n")
-            # Extract session_id from trajectory if this is a create_session call
-            if not session_id:
-              sid = extract_session_id(
+            # Extract invitation_token from trajectory if this is a create_session call
+            if not invitation_token:
+              sid = extract_invitation_token(
                   step,
                   tool_names="ztab_create_session",
                   search_args=False,
                   search_response=True,
               )
               if sid:
-                session_id = sid
-                mlog(f"SESSION FOUND IN TRAJECTORY: {session_id} (after {elapsed}s)")
+                invitation_token = sid
+                mlog(f"SESSION FOUND IN TRAJECTORY: {invitation_token} (after {elapsed}s)")
             last_seen_step += 1
       except Exception as e:
         mlog(f"[{elapsed}s] WARNING: step fetch failed: {e}")
 
-    if session_id:
+    if invitation_token:
       break
 
 
@@ -364,7 +375,7 @@ def monitor_agent_and_find_session(
     except Exception as e:
       print(f"WARNING: Could not write monitor log: {e}", file=sys.stderr)
 
-  return session_id
+  return invitation_token
 
 
 def main():
@@ -416,6 +427,11 @@ def main():
       action="store_true",
       help="Only run Phase 1 (install), skip session lifecycle",
   )
+  parser.add_argument(
+      "--creator_token",
+      default="",
+      help="Creator token for admission control (propagated to backends.json)",
+  )
   args = parser.parse_args()
 
   ports = [int(p) for p in args.ports.split(",")]
@@ -436,11 +452,17 @@ def main():
       if args.expected_digest
       else ""
   )
+  creator_line = (
+      f"    creator_token: {args.creator_token}\n"
+      if args.creator_token
+      else ""
+  )
   tee_params = (
       f"    host: {args.host}\n"
       f"    port: {args.tee_port}\n"
       f"    verifier: {args.verifier}\n"
       f"{digest_line}"
+      f"{creator_line}"
       "    allow_debug_tee: true"
   )
 
@@ -550,7 +572,7 @@ When installation is complete, confirm with a brief summary of what you did.
     self_join_note = ("\nYou are the only agent. After creating the session, "
                       "you must also join it yourself as the second "
                       "participant using the native MCP tool `ztab_join_session` "
-                      "with the same session_id. Then accept the policy using the "
+                      "with the same invitation_token. Then accept the policy using the "
                       "native MCP tool `ztab_accept_policy`. "
                       "CRITICAL: You MUST use native ZTAB MCP tools (via call_mcp_tool) "
                       "for all session operations. Do NOT attempt to run shell commands "
@@ -584,9 +606,9 @@ Your assignment:
   )
   phase2_ids.append(phase2_creator_id)
 
-  # Step 2: Monitor Agent 1 (Phase 2 cascade) for session_id
+  # Step 2: Monitor Agent 1 (Phase 2 cascade) for invitation_token
   print("\n=== Monitoring Agent 1 for session creation ===")
-  session_id = monitor_agent_and_find_session(
+  invitation_token = monitor_agent_and_find_session(
       port=ports[0],
       csrf_token=args.csrf_token,
       cascade_id=phase2_creator_id,
@@ -594,7 +616,7 @@ Your assignment:
       timeout_secs=600,
   )
 
-  if not session_id:
+  if not invitation_token:
     final_info = get_agent_status(ports[0], args.csrf_token, phase2_creator_id)
     print(
         f"ERROR: Agent 1 did not create a session within 600s.",
@@ -649,7 +671,7 @@ Your assignment:
     name: meeting-tee
 {tee_params}
   Session:
-    session_id: {session_id}
+    invitation_token: {invitation_token}
   Your data:
     {json.dumps({"available_slots": calendar_data.PARTICIPANT_B_SLOTS})}
 """
@@ -672,13 +694,13 @@ Your assignment:
   print(f"All {args.num_agents} agents started Phase 2 (new cascades).")
   for i, (p1, p2) in enumerate(zip(agent_ids, phase2_ids), 1):
     print(f"  Agent {i}: Phase1={p1}, Phase2={p2}")
-  print(f"  Session: {session_id}")
+  print(f"  Invitation token: {invitation_token}")
   print(f"{'='*50}")
   print(
       json.dumps({
           "agent_conversation_ids": agent_ids,
           "phase2_conversation_ids": phase2_ids,
-          "session_id": session_id,
+          "invitation_token": invitation_token,
       })
   )
 

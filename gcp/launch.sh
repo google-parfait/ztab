@@ -45,6 +45,7 @@ IMAGE_TAG=""  # derived from MODEL below
 INSTANCE_NAME="ztab-server-h100"
 TEMPLATE_NAME="ztab-server-h100-template"
 GROUP_NAME="ztab-server-h100-mig"
+CREATOR_TOKEN=""
 DEBUG="true"
 
 usage() {
@@ -99,6 +100,8 @@ while [[ $# -gt 0 ]]; do
     --group_name=*)   GROUP_NAME="${1#*=}"; shift ;;
     --debug)          DEBUG="true"; shift ;;
     --debug=*)        DEBUG="${1#*=}"; shift ;;
+    --creator_token)  CREATOR_TOKEN="$2"; shift 2 ;;
+    --creator_token=*) CREATOR_TOKEN="${1#*=}"; shift ;;
     --help|-h)        usage ;;
     *)
       echo "Unknown flag: $1"
@@ -161,6 +164,9 @@ case "${MODE}" in
     METADATA="${METADATA},tee-install-gpu-driver=true"
     METADATA="${METADATA},ita-api-key=${ITA_API_KEY}"
     METADATA="${METADATA},ita-region=US"
+    if [[ -n "${CREATOR_TOKEN}" ]]; then
+      METADATA="${METADATA},tee-env-CREATOR_TOKEN=${CREATOR_TOKEN}"
+    fi
 
     echo "══════════════════════════════════════════════════════════════"
     echo "  Setting up Confidential Space VM Template"

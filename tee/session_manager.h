@@ -67,8 +67,7 @@ class SessionManager {
   absl::StatusOr<SubmitInputResponse> SubmitInput(
       const SubmitInputRequest& request);
 
-  absl::StatusOr<GetResultResponse> GetResult(
-      const GetResultRequest& request);
+  absl::StatusOr<GetResultResponse> GetResult(const GetResultRequest& request);
 
   absl::StatusOr<GetSessionStatusResponse> GetSessionStatus(
       const GetSessionStatusRequest& request);
@@ -87,24 +86,38 @@ class SessionManager {
     SessionState state = OPEN;
     SessionPolicy policy;
     const PolicyDefinition* policy_def = nullptr;
-    absl::flat_hash_map<std::string, Participant> participants;  // token -> participant
+    absl::flat_hash_map<std::string, Participant>
+        participants;  // token -> participant
     std::string result_json;
     SessionError error_code = SESSION_ERROR_UNSPECIFIED;
     std::string error_detail;
     absl::Time state_entered_at;
     absl::Duration timeout;
+    // One Token Per Call: invitation token for this session.
+    std::string invitation_token;
+    // All participant tokens for O(1) GC cleanup.
+    std::vector<std::string> participant_tokens;
+    // JoinSession idempotency: client_nonce -> participant_token.
+    absl::flat_hash_map<std::string, std::string> nonce_to_token;
+    // CreateSession idempotency: the nonce used to create
+    // this session.
+    std::string creator_nonce;
   };
 
   // Generate a cryptographically random hex string of the given byte length.
   static std::string GenerateRandomHex(int num_bytes);
 
+  // Validate that a string is a valid UUIDv4 (RFC 4122).
+  static bool IsValidUuidV4(const std::string& s);
+
   // Check if the session has timed out in its current state. If so,
   // transitions to ABORTED and returns true.
   bool CheckAndEnforceTimeout(Session& session);
 
-  // Authenticate: returns PERMISSION_DENIED if session_id or token is invalid.
+  // Authenticate: looks up session via participant_token reverse index.
+  // Returns PERMISSION_DENIED if token is invalid.
   absl::StatusOr<std::pair<Session*, Participant*>> Authenticate(
-      const std::string& session_id, const std::string& participant_token);
+      const std::string& participant_token);
 
   // Lazy garbage collection: erase terminal sessions (CLOSED/ABORTED) that
   // have been in that state longer than kTerminalRetentionSeconds. Called
@@ -121,14 +134,23 @@ class SessionManager {
   absl::Status ValidateJsonSchema(const std::string& json_str,
                                   const std::string& schema_json);
 
-  LlamaEngine* engine_;               // Not owned.
-  const PolicyRegistry* registry_;     // Not owned.
+  LlamaEngine* engine_;             // Not owned.
+  const PolicyRegistry* registry_;  // Not owned.
   mutable std::mutex mu_;
   absl::flat_hash_map<std::string, Session> sessions_;
 
+  // One Token Per Call: reverse indexes for token -> session lookup.
+  absl::flat_hash_map<std::string, std::string>
+      invitation_to_session_;  // invitation_token -> session_id
+  absl::flat_hash_map<std::string, std::string>
+      participant_to_session_;  // participant_token -> session_id
+
+  // CreateSession idempotency: creator_nonce -> session_id.
+  absl::flat_hash_map<std::string, std::string> creator_nonce_to_session_;
+
   // F13: Track active background threads to enable safe shutdown.
-  std::condition_variable async_cv_;   // Notified when a thread finishes.
-  int active_async_threads_ = 0;       // Guarded by mu_.
+  std::condition_variable async_cv_;  // Notified when a thread finishes.
+  int active_async_threads_ = 0;      // Guarded by mu_.
 };
 
 }  // namespace ztab

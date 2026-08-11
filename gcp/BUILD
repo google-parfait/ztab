@@ -23,10 +23,17 @@ pkg_tar(
 oci_image(
     name = "ztab_server_echo_oci_image",
     base = "@distroless_cc_debian12_base",
-    cmd = ["--attestation_provider=mock", "--policy_dir=/policies", "--port=8000"],
+    cmd = [
+        "--attestation_provider=mock",
+        "--policy_dir=/policies",
+        "--port=8000",
+    ],
     entrypoint = ["/ztab_server"],
     exposed_ports = ["8000/tcp"],
-    tars = ["//tee:ztab_server_tar", ":policy_layer"],
+    tars = [
+        "//tee:ztab_server_tar",
+        ":policy_layer",
+    ],
 )
 
 oci_load(

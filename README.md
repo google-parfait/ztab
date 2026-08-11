@@ -33,17 +33,12 @@ participants or to the cloud infrastructure provider.
     shared outcome using a previously agreed-upon prompt and/or
     other instructions.
 
-NOTE: This code is under development, and is not yet fully
-functional. In particular, in the current form, the server-side
-code is not yet deployed in a functional TEE.
-
-In the present state, the framework only enables the agent to
-connect to the server over TLS, and obtain and display the
-attestation evidence to the user.
-
-Full end-to-end agent coordination functionality and
-architecture, including the features listed above, will be
-introduced over time in an incremental fashion.
+The framework supports the full multi-party session lifecycle:
+session creation with admission control, policy agreement,
+private input submission, LLM inference inside the TEE, and
+result retrieval. End-to-end agent coordination has been
+validated using the cold-start test harness with real agents
+coordinating calendar scheduling sessions.
 
 ## Repository Layout
 
@@ -51,6 +46,10 @@ introduced over time in an incremental fashion.
 | :--- | :--- | :--- |
 | `tee/` | C++ gRPC server. Builds via Bazel, packages via Docker. | [tee/README.md](tee/README.md) |
 | `agent/` | Python client, MCP server, CLI tools, skill definition. | [agent/README.md](agent/README.md) |
+| `test/` | Test infrastructure: component tests and E2E harness. | [test/README.md](test/README.md) |
+| `docs/` | Design document and architecture notes. | [docs/design.md](docs/design.md) |
+| `gcp/` | GCP Confidential Space deployment scripts and Bazel macros. | — |
+| `examples/` | Scenario definitions (policies, test data, schemas). | [examples/calendar/README.md](examples/calendar/README.md) |
 
 ## Quick Start
 
@@ -65,6 +64,13 @@ cd tee
 ./run_server.sh --port 8000                  # build and start on port 8000
 ./run_server.sh --port 8000 -d               # detached mode
 ./run_server.sh --llm --gcs_bucket gs://your-bucket     # Run with LLM model weights
+```
+
+To enable admission control (token-gated session creation):
+
+```bash
+./run_server.sh --llm --gcs_bucket gs://your-bucket \
+    --creator_token SECRET
 ```
 
 ### 2. Run the TEE Server (GCP Confidential Space)
@@ -88,6 +94,13 @@ For end-to-end hardware testing on GCP with H100 GPUs and Intel TDX, see the int
 cd agent
 pip install -r requirements.txt   # grpcio, grpcio-tools, etc.
 python3 generate_protos.py        # compile proto stubs
+```
+
+For automated MCP server registration and backend configuration:
+
+```bash
+agent/install_mcp.sh \
+    --backend-id local --host localhost --port 8000
 ```
 
 ### 4. Verify Connectivity

@@ -52,7 +52,7 @@ from harness_lib import STATUS_NAMES
 from harness_lib import STATUS_STR_TO_INT
 from harness_lib import stream_agent_thoughts
 from harness_lib import extract_field_from_step
-from harness_lib import extract_session_id
+from harness_lib import extract_invitation_token
 
 # Alias for backward compatibility within this file.
 _detect_active_timer = detect_active_timer
@@ -83,11 +83,11 @@ def save_final_conversation(
 
 
 def _scan_agent_for_session_metadata(agent, label, old_last_step):
-  """Scan newly streamed steps for session_id and participant_token.
+  """Scan newly streamed steps for invitation_token and participant_token.
 
-  Returns a tuple of (session_id, creator_token) if found, else (None, None).
+  Returns a tuple of (invitation_token, creator_token) if found, else (None, None).
   """
-  session_id = None
+  invitation_token = None
   creator_token = None
   try:
     if os.path.exists(agent["log_file"]):
@@ -96,14 +96,14 @@ def _scan_agent_for_session_metadata(agent, label, old_last_step):
         new_lines = lines[old_last_step:]
         for line in new_lines:
           step = json.loads(line.strip())
-          sid = extract_session_id(
+          sid = extract_invitation_token(
               step,
               tool_names="ztab_create_session",
               search_args=False,
               search_response=True,
           )
           if sid:
-            session_id = sid
+            invitation_token = sid
           tok = extract_field_from_step(
               step,
               "participant_token",
@@ -118,7 +118,7 @@ def _scan_agent_for_session_metadata(agent, label, old_last_step):
         f"  [{label}] [Monitor] WARNING failed to parse new steps: {e}",
         file=sys.stderr,
     )
-  return session_id, creator_token
+  return invitation_token, creator_token
 
 
 def _connect_to_tee(tee_host, tee_port, verifier):
@@ -138,13 +138,13 @@ def _connect_to_tee(tee_host, tee_port, verifier):
   return channel, stub
 
 
-def _poll_tee_status(stub, session_id, creator_token):
+def _poll_tee_status(stub, creator_token):
   """Query TEE server for session state.
 
   Returns session_manager_pb2.SessionState enum, or raises on failure.
   """
   req = session_manager_pb2.GetSessionStatusRequest(
-      session_id=session_id, participant_token=creator_token
+      participant_token=creator_token
   )
   resp = stub.GetSessionStatus(req)
   state_name = session_manager_pb2.SessionState.Name(resp.state)
@@ -427,7 +427,7 @@ def monitor_agents(
         "log_file": os.path.join(run_dir, "agents", str(i), "thoughts.jsonl"),
     }
   IDLE_GRACE_SECS = 30  # Base grace; extended dynamically by F7 timer detection
-  session_id = None
+  invitation_token = None
   creator_token = None
   creator_label = None
   tee_stub = None
@@ -477,9 +477,9 @@ def monitor_agents(
             agent, label, old_last_step
         )
         if sid:
-          session_id = sid
+          invitation_token = sid
           print(
-              f"  [Monitor] Discovered Session ID: {session_id}",
+              f"  [Monitor] Discovered Invitation Token: {invitation_token}",
               file=sys.stderr,
           )
         if tok:
@@ -525,15 +525,15 @@ def monitor_agents(
         agent["done"] = False
 
     # Direct TEE server verification (Point 1 & 2)
-    if tee_host and tee_port and session_id and creator_token:
+    if tee_host and tee_port and invitation_token and creator_token:
       if tee_stub is None:
         tee_channel, tee_stub = _connect_to_tee(tee_host, tee_port, verifier)
 
       if tee_stub is not None:
-        tee_state = _poll_tee_status(tee_stub, session_id, creator_token)
+        tee_state = _poll_tee_status(tee_stub, creator_token)
 
     # Stall detection and creator nudging (Point 4)
-    if creator_label and not nudged_creator and session_id is not None:
+    if creator_label and not nudged_creator and invitation_token is not None:
       creator_agent = agents.get(creator_label)
       if (
           creator_agent
@@ -591,7 +591,7 @@ def monitor_agents(
     results[label] = check_agent_result(
         label,
         run_dir,
-        checked_tee=bool(tee_host and tee_port and session_id is not None),
+        checked_tee=bool(tee_host and tee_port and invitation_token is not None),
         tee_session_closed=(tee_state == session_manager_pb2.SessionState.CLOSED),
     )
 

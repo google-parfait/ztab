@@ -34,8 +34,8 @@ class LlamaEngine {
 
   // Generates text from the given prompt. Returns the generated text
   // (not including the prompt itself).
-  virtual absl::StatusOr<std::string> Generate(
-      const std::string& prompt, int max_tokens = 256) = 0;
+  virtual absl::StatusOr<std::string> Generate(const std::string& prompt,
+                                               int max_tokens = 256) = 0;
 };
 
 // Creates a LlamaEngine by loading a GGUF model from the given path.

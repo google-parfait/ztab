@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <openssl/crypto.h>
+
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -20,13 +22,13 @@
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
-#include "absl/log/initialize.h"
 #include "absl/log/globals.h"
+#include "absl/log/initialize.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
-#include "absl/strings/str_cat.h"
 #include "attestation_token_provider.h"
 #include "gcp_attestation_token_provider.h"
 #include "grpcpp/grpcpp.h"
@@ -34,8 +36,8 @@
 #include "llama_engine.h"
 #include "mock_attestation_token_provider.h"
 #include "policy_registry.h"
-#include "session_manager.h"
 #include "session_manager.grpc.pb.h"
+#include "session_manager.h"
 #include "tls_proxy.h"
 
 ABSL_FLAG(int32_t, port, 8000, "The port on which the server should listen.");
@@ -62,7 +64,11 @@ ABSL_FLAG(std::string, policy_dir, "",
           "If empty, no policies are loaded and session creation will fail. "
           "Example: --policy_dir=examples/calendar/");
 
-
+ABSL_FLAG(std::string, creator_token, "",
+          "Pre-shared token for gating CreateSession. If set, clients must "
+          "include this token in the x-ztab-creator-token gRPC metadata "
+          "header. If empty, CreateSession is ungated (pilot mode). "
+          "For production: inject post-boot via KMS (see §6.2).");
 
 namespace ztab {
 namespace {
@@ -134,6 +140,31 @@ class AgentBrokerServiceImpl final : public AgentBrokerService::Service {
   grpc::Status CreateSession(grpc::ServerContext* context,
                              const CreateSessionRequest* request,
                              CreateSessionResponse* response) override {
+    // One Token Per Call: gate CreateSession with creator_token.
+    // TODO: b/438809953 — Replace this inline check with a pluggable
+    // AdmissionInterceptor class hierarchy (BearerTokenInterceptor /
+    // AllowAllInterceptor) as specified in design doc §3.
+    std::string required_token = absl::GetFlag(FLAGS_creator_token);
+    if (required_token.empty()) {
+      const char* env_token = std::getenv("CREATOR_TOKEN");
+      if (env_token != nullptr) {
+        required_token = env_token;
+      }
+    }
+    if (!required_token.empty()) {
+      auto metadata = context->client_metadata();
+      auto it = metadata.find("x-ztab-creator-token");
+      std::string provided =
+          (it != metadata.end())
+              ? std::string(it->second.data(), it->second.size())
+              : "";
+      if (it == metadata.end() || provided.size() != required_token.size() ||
+          CRYPTO_memcmp(provided.data(), required_token.data(),
+                        required_token.size()) != 0) {
+        return grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                            "Invalid token");
+      }
+    }
     auto result = session_mgr_->CreateSession(*request);
     if (!result.ok()) return AbslToGrpc(result.status());
     *response = *result;
@@ -186,8 +217,8 @@ class AgentBrokerServiceImpl final : public AgentBrokerService::Service {
   }
 
  private:
-  LlamaEngine* engine_;           // Not owned.
-  SessionManager* session_mgr_;   // Not owned.
+  LlamaEngine* engine_;          // Not owned.
+  SessionManager* session_mgr_;  // Not owned.
 };
 
 volatile sig_atomic_t g_shutdown_requested = 0;
@@ -281,9 +312,7 @@ void RunServer() {
 
   // Install signal handlers so that proxy.Stop() drain logic executes on
   // container shutdown (SIGTERM from Docker/Borg, SIGINT from Ctrl-C).
-  auto shutdown_handler = [](int signum) {
-    g_shutdown_requested = 1;
-  };
+  auto shutdown_handler = [](int signum) { g_shutdown_requested = 1; };
   std::signal(SIGTERM, shutdown_handler);
   std::signal(SIGINT, shutdown_handler);
 

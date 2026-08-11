@@ -25,7 +25,6 @@
 namespace ztab {
 namespace {
 
-
 class MockAttestationTokenProvider : public AttestationTokenProvider {
  public:
   absl::StatusOr<std::string> GetAttestationToken(
@@ -61,8 +60,7 @@ class MockAttestationTokenProvider : public AttestationTokenProvider {
 
 }  // namespace
 
-std::unique_ptr<AttestationTokenProvider>
-CreateMockAttestationTokenProvider() {
+std::unique_ptr<AttestationTokenProvider> CreateMockAttestationTokenProvider() {
   return std::make_unique<MockAttestationTokenProvider>();
 }
 

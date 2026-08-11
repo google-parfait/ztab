@@ -102,9 +102,21 @@ cuda_library(
     alwayslink = True,
 )
 
+genrule(
+    name = "build_info_gen",
+    outs = ["build-info.cpp"],
+    cmd = """cat << 'EOF' > $@
+int llama_build_number(void) { return 0; }
+const char * llama_commit(void) { return "ztab"; }
+const char * llama_compiler(void) { return "clang"; }
+const char * llama_build_target(void) { return "x86_64"; }
+EOF
+""",
+)
+
 cc_library(
     name = "llama_cpp",
-    srcs = glob([
+    srcs = [":build_info_gen"] + glob([
         "src/**/*.cpp",
         "common/*.cpp",
     ], exclude = [

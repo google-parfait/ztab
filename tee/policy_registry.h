@@ -73,6 +73,11 @@ class PolicyRegistry {
   // Returns the number of registered policies.
   int size() const { return policies_.size(); }
 
+  // Programmatic policy registration (for unit testing).
+  void RegisterPolicy(const std::string& policy_class, PolicyDefinition def) {
+    policies_[policy_class] = std::move(def);
+  }
+
  private:
   absl::flat_hash_map<std::string, PolicyDefinition> policies_;
 };

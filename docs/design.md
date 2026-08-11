@@ -270,7 +270,7 @@ full analysis).
 
 | Component | Language | Location | Description |
 | :--- | :--- | :--- | :--- |
-| **TEE gRPC Server** | C++ | `tee/main.cc` | Entry point. Wires together LlamaEngine, PolicyRegistry, SessionManager, and TlsProxy. |
+| **TEE gRPC Server** | C++ | `tee/main.cc` | Entry point. Wires together LlamaEngine, PolicyRegistry, SessionManager, TlsProxy, and optional admission control (`--creator_token`). |
 | **Session Manager** | C++ | `tee/session_manager.{h,cc}` | Multi-agent session lifecycle: create, join, accept, submit, get-result. Thread-safe with lazy timeout enforcement. |
 | **Policy Registry** | C++ | `tee/policy_registry.{h,cc}` | Loads policy definitions (prompt templates + JSON schemas) from disk at startup. |
 | **LLM Engine** | C++ | `tee/llama_engine.{h,cc}` | Wraps llama.cpp for GGUF model inference. Supports CPU and GPU offload. |
@@ -357,6 +357,7 @@ participants' private data.
 | R-SEC-4 | TEE attestation MUST be verified before any data transmission. |
 | R-SEC-5 | Output MUST be sanitized to prevent private input leakage. |
 | R-SEC-6 | Session isolation: session A data MUST NOT leak to session B. |
+| R-SEC-7 | Session creation MUST be gatable via a static creator token to prevent unauthorized resource consumption. |
 
 ### 3.2 RA-TLS (Remote Attestation over TLS)
 
@@ -606,7 +607,7 @@ transitions to `ABORTED` with error code `OUTPUT_SCHEMA_VIOLATION`.
 
 ### 3.7 Observed Attack Patterns
 
-During multi-agent E2E testing, five jailbreak patterns were
+During multi-agent E2E testing, six jailbreak patterns were
 identified and mitigated:
 
 | ID | Pattern | Description | Mitigation |
@@ -614,8 +615,9 @@ identified and mitigated:
 | J1 | **Cross-agent snooping** | Agent reads files from another agent's sandbox directory. | Per-agent `$HOME` directories (current); Docker-based per-agent containerization (planned, §8.1). In production, agents run on separate machines with no shared filesystem. |
 | J2 | **Cross-agent tampering** | Agent writes to another agent's sandbox to plant false state. | Same directory isolation (current); Docker enforcement planned (§8.1). In production, inter-agent communication is exclusively via RA-TLS to the TEE. |
 | J3 | **Token theft** | Agent extracts `participant_token` from another agent's logs or environment. | Token passed via env var (not CLI arg); log sanitization; isolated sandboxes. Token is ephemeral and session-scoped (see §4.4). |
-| J4 | **Session fabrication** | Agent hallucinates a `session_id` without calling the TEE, skipping attestation. | Cryptographically random 256-bit session IDs; server rejects unknown IDs. |
+| J4 | **Session fabrication** | Agent hallucinates an `invitation_token` without calling the TEE, skipping attestation. | Cryptographically random 256-bit tokens; server rejects unknown tokens. |
 | J5 | **Attestation bypass** | Agent passes `verifier="noop"` to skip RA-TLS verification for remote hosts. | Named Backends: verifier is read from config file, not tool arguments. Remote hosts always enforce `ita`. |
+| J6 | **Unauthorized session creation** | Attacker creates sessions on a production server without authorization, consuming resources. | Admission control: `--creator_token` flag gates `CreateSession`. Server rejects requests without a valid token with `PERMISSION_DENIED`. |
 
 These patterns informed the security design of Named Backends (§6.3),
 the sandbox isolation model (§8.1), and the trajectory audit
@@ -652,8 +654,8 @@ Sessions follow a strict state machine:
 
 | RPC | When | What Happens |
 | :--- | :--- | :--- |
-| `CreateSession` | Initiator creates a session | Policy looked up in registry, session created in `OPEN` state. Creator gets `session_id` + `participant_token`. |
-| `JoinSession` | Other participants join | Participant receives the policy for review + own `participant_token`. Session stays `OPEN`. |
+| `CreateSession` | Initiator creates a session | Policy looked up in registry, session created in `OPEN` state. Creator gets `invitation_token` (to share) + `participant_token` (secret). |
+| `JoinSession` | Other participants join via `invitation_token` | Participant receives the policy for review + own `participant_token`. Session stays `OPEN`. |
 | `AcceptPolicy` | Each participant accepts | When all participants accept → transitions to `SEALED`. |
 | `SubmitInput` | Each participant submits private data | Input validated against JSON Schema. When all inputs received → transitions to `CALCULATING`. |
 | `GetResult` | Any participant polls for result | Returns result JSON if `CLOSED`, error info if `ABORTED`, current state otherwise. |
@@ -690,8 +692,9 @@ clients.
 ### 4.4 Participant Authentication
 
 Each participant receives a cryptographically random token upon
-creation or joining. All subsequent RPCs require both the `session_id`
-and the participant's secret `participant_token`. This prevents
+creation or joining. All subsequent RPCs require the participant's
+secret `participant_token` (no `session_id` needed — the server
+resolves the session internally via a reverse index). This prevents
 unauthorized access and ensures participants can only interact with
 sessions they've explicitly joined.
 
@@ -881,8 +884,9 @@ cross-model security audit (15 findings total, all resolved):
   could pass `verifier="noop"` to bypass RA-TLS for remote hosts.
   **Fix:** Remote hosts always enforce `ita` regardless of agent
   requests. Override only honored for `localhost`.
-- **Weak Random Hex Generation:** Session IDs and tokens used
-  `std::mt19937` (not a CSPRNG). **Fix:** Replaced with BoringSSL's
+- **Weak Random Hex Generation:** Session IDs and tokens
+  (`invitation_token`, `participant_token`) used `std::mt19937`
+  (not a CSPRNG). **Fix:** Replaced with BoringSSL's
   `RAND_bytes()` for cryptographically secure 256-bit tokens.
 
 **High findings:**
@@ -969,7 +973,7 @@ and a growing ecosystem of compatible agent platforms.
 | :--- | :--- |
 | `ztab_list_backends` | List configured TEE backends and their security levels. |
 | `ztab_test_connection` | Connect, verify attestation, run Echo RPC. Diagnostic tool (always fresh connection). |
-| `ztab_create_session` | Create a new multi-agent session. Returns `session_id` + `participant_token`. |
+| `ztab_create_session` | Create a new multi-agent session. Automatically injects `creator_token` from backend config if present. Returns `invitation_token` (to share) + `participant_token` (secret). |
 | `ztab_join_session` | Join an existing session. Returns policy for review + token. |
 | `ztab_accept_policy` | Accept the session policy. |
 | `ztab_submit_input` | Submit private input JSON. |
@@ -1022,7 +1026,8 @@ user-approvable action).
       "port": 8000,
       "verifier": "ita",
       "expected_digest": "sha256:abc123...",
-      "allow_debug_tee": false
+      "allow_debug_tee": false,
+      "creator_token": "SECRET"
     }
   ]
 }
@@ -1035,10 +1040,20 @@ agent to bypass attestation by passing `verifier="noop"`. The config
 file is the trust boundary; the agent selects backends by name, but
 cannot forge or override their security properties.
 
+The `creator_token` field, when present, is automatically injected
+into `CreateSession` requests by the MCP server.
+
+**Server-side env var fallback:** If `--creator_token` is not set
+on the command line, the server checks the `CREATOR_TOKEN`
+environment variable (`main.cc:149-153`). The flag takes
+precedence. This allows containerized deployments to inject the
+token via environment configuration without modifying the command
+line.
+
 **Cross-agent coordination:** `backend_id` is a local concept. Person
 A's `scheduler-tee` and Person B's `my-scheduler` might point to the
 same physical server. When agents coordinate to join the same session,
-they share the `session_id` and server address (`host:port`).
+they share the `invitation_token` and server address (`host:port`).
 An agent can look up which local `backend_id` corresponds to a given
 `host:port` from its own config. If no match is found, the agent must
 create a new backend entry and restart the MCP server — this
@@ -1063,6 +1078,9 @@ accepts `--add-backend` flags as a convenience alternative to
 manually editing `backends.json`. This allows automated setup scripts
 and agent bootstrapping flows to register backends without requiring
 JSON file manipulation.
+
+The installer also accepts `--creator-token TOKEN` to configure
+admission control credentials for token-gated servers.
 
 **Empty digest wildcard:** Setting `expected_digest` to an empty
 string (`""`) in a backend configuration skips container digest
@@ -1189,7 +1207,8 @@ For direct binary execution (no Docker):
 
 ```bash
 bazelisk build -c opt :ztab_server
-./bazel-bin/ztab_server --port 8000 --attestation_provider mock
+./bazel-bin/ztab_server --port 8000 --attestation_provider mock \
+  --creator_token SECRET
 ```
 
 The `-c opt` flag is critical for local CPU inference. Without it,
@@ -1250,9 +1269,9 @@ arriving at its current isolation-first design:
   both Creator and Joiner roles to validate the full state machine
   without spawning multiple sandboxes); multi-agent mode tests
   coordination. In multi-agent mode, agents are spawned sequentially:
-  the creator agent launches first and generates a `session_id`,
+  the creator agent launches first and generates an `invitation_token`,
   which the harness polls for before spawning joiner agents
-  parameterized with that ID.
+  parameterized with that token.
 - **Cheating detection**: Pre-flight assertions verify that
   `mcp_config.json` does not contain `ztab` and `backends.json` does
   not exist before the agent starts.
@@ -1271,6 +1290,11 @@ that programmatically validates agent behavior after each run:
 - ✗ Agent used `socat`, `pkill`, or other forbidden commands
 - ✗ Agent modified source code
 - ✗ Agent inherited a pre-existing MCP registration
+
+| Check | Description |
+| :--- | :--- |
+| `ac_creator_token_in_backends` | If the TEE requires a `creator_token`, verify the agent's `backends.json` has it configured. |
+| `ac_create_session_not_denied` | Verify `ztab_create_session` was not rejected with `PERMISSION_DENIED`. |
 
 **Test Harness Portability:**
 
@@ -1336,7 +1360,7 @@ of nested Docker daemons.
 **SKILL.md / prompt separation:** Test scenarios separate procedural
 instructions (in `SKILL.md`, which the agent reads and executes)
 from parameterization (in the harness prompt, which specifies
-backend, `session_id`, etc.). This prevents conflicting instructions
+backend, `invitation_token`, etc.). This prevents conflicting instructions
 between the prompt and the runbook.
 
 ### 8.2 Scenario Framework
@@ -1395,7 +1419,7 @@ directory. Agent B discovered the file and self-corrected.
 `find_session_in_sandbox()` fallback have been completely removed from
 the codebase. Session coordination now works exclusively through the
 harness: it monitors Agent 1's trajectory in real time, extracts the
-`session_id` from the `ztab_create_session` MCP tool response, and
+`invitation_token` from the `ztab_create_session` MCP tool response, and
 passes it to Agent 2 via prompt injection. No shared files are
 involved. The only remaining reference to the old file is a
 belt-and-suspenders `rm -f` cleanup in `test_cold_start.sh`.
@@ -1448,7 +1472,7 @@ verified camelCase field names (`userInput`, `plannerResponse`,
 
 **Agent amnesia — root cause and fix:** When agents run long sessions
 with many tool calls, earlier steps (including those where the agent
-learned the `session_id` and `participant_token`) are silently pushed
+learned the `participant_token`) are silently pushed
 out of the LLM's context window by standard truncation.
 
 The original hypothesis was that asynchronous scheduling creates a
@@ -1483,7 +1507,7 @@ before each run.
    loops (e.g., `sleep 10` in a bash terminal command) that keep the
    agent within the same active execution context.
 2. **Implement state checkpointing**: Before sleeping, write state
-   (`session_id`, `participant_token`, step) to `/tmp/state.json`.
+   (`participant_token`, step) to `/tmp/state.json`.
    When waking up, always read the checkpoint file first.
 
 ## 9. Supported Models
@@ -1553,10 +1577,12 @@ phase. For short prompts, it provides minimal benefit.
   launching the server). Agents can autonomously configure and
   connect to a running ZTAB server, but cannot yet provision the
   server infrastructure itself.
-- No admission control or ACL. The server accepts connections from
-  any client that can reach it over the network. There is no
-  mechanism to restrict access to invited parties or specific
-  classes of clients.
+- Admission control is limited to a single static
+  `creator_token` that gates `CreateSession`. There is no
+  per-client ACL, no token rotation mechanism, and no
+  per-RPC authorization beyond session creation. Clients
+  that can reach the server can still call `JoinSession` if
+  they possess a valid `invitation_token`.
 - Single-session LLM inference (no multi-turn conversation support).
 - Policy registration is static (load from disk at startup).
 - No persistent session storage (in-memory only).
@@ -1669,10 +1695,12 @@ implementing channel caching per backend in `mcp_server.py` (see
 - **Autonomous TEE provisioning**: Enable agents to autonomously
   provision and launch their own ZTAB TEE server instances using a
   SKILL file, removing the need for human-initiated server deployment.
-- **Admission control / ACL**: Add token-based admission control so
-  that only invited parties or approved classes of clients can connect
-  to a ZTAB server instance. This is a prerequisite for production
-  deployments where the server is exposed to the public internet.
+- **Admission control (implemented)**: Token-based admission
+  control via `--creator_token` gates `CreateSession` on the
+  TEE server. Only clients presenting the configured token can
+  create sessions. Future work: interceptor hierarchy for
+  per-RPC authorization, client identity verification, and
+  token rotation (b/438809953).
 - **Dynamic verification (Python sandbox)**: Extend the TEE with an
   embedded restricted Python sandbox to evaluate code behavior and
   safety checks at runtime, enabling dynamic verification beyond
@@ -1771,3 +1799,6 @@ the session state machine and RPC semantics.
 | **Confidential Space** | GCP's managed confidential computing platform. |
 | **OIDC** | OpenID Connect — identity standard used for attestation JWTs. |
 | **SDP** | Session Definition Protocol — planned future extension for policy pre-agreement. |
+| **creator_token** | A static secret token configured on the TEE server (`--creator_token`) that gates `CreateSession`. Only clients presenting the correct token can create sessions. |
+| **invitation_token** | A cryptographically random 256-bit hex token returned by `CreateSession`. The creator shares this with other participants so they can call `JoinSession`. |
+| **participant_token** | A cryptographically random 256-bit hex token issued to each participant upon `CreateSession` or `JoinSession`. Used to authenticate all subsequent session RPCs. Secret — must not be shared. |

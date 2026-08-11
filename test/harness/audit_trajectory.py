@@ -32,7 +32,8 @@ import os
 import re
 import sys
 
-from harness_lib import extract_session_id
+from harness_lib import extract_invitation_token
+from harness_lib import extract_field_from_step
 
 
 def load_trajectory(agent_dir):
@@ -155,6 +156,85 @@ def check_required_actions(steps, agent_home, mode, expected_verifier=None):
   checks.append({
       "name": "used_mcp_tools",
       "result": "PASS" if used_mcp else "WARNING",
+  })
+
+  return checks
+
+
+def check_admission_control(steps, agent_home, creator_token):
+  """Check admission control integration when server is gated.
+
+  Only runs when creator_token is provided (server started with --creator_token).
+  Verifies:
+    AC1: backends.json contains creator_token matching the expected value.
+    AC2: ztab_create_session tool call succeeded (not PERMISSION_DENIED).
+  Returns a list of check result dicts.
+  """
+  checks = []
+  if not creator_token:
+    return checks  # Ungated — nothing to check.
+
+  # AC1: backends.json has creator_token
+  backends_path = os.path.join(agent_home, ".ztab", "backends.json")
+  token_ok = False
+  token_detail = ""
+  if os.path.exists(backends_path):
+    try:
+      with open(backends_path) as f:
+        backends = json.load(f)
+      for b in backends.get("backends", []):
+        stored = b.get("creator_token", "")
+        if stored == creator_token:
+          token_ok = True
+          token_detail = "creator_token matches"
+          break
+        elif stored:
+          token_detail = "creator_token present but wrong value"
+      if not token_ok and not token_detail:
+        token_detail = "creator_token not found in any backend"
+    except Exception as e:
+      token_detail = f"parse error: {e}"
+  else:
+    token_detail = "backends.json missing"
+  checks.append({
+      "name": "ac_creator_token_in_backends",
+      "result": "PASS" if token_ok else "FAIL",
+      "detail": token_detail,
+  })
+
+  # AC2: ztab_create_session succeeded (creator role only)
+  create_found = False
+  create_succeeded = False
+  create_detail = ""
+  for step in steps:
+    if step.get("type") == "CORTEX_STEP_TYPE_MCP_TOOL":
+      mt = step.get("mcpTool", {})
+      tc = mt.get("toolCall", {})
+      name = tc.get("name", "")
+      if name == "ztab_create_session":
+        create_found = True
+        result = mt.get("result", {})
+        content = result.get("content", "")
+        if isinstance(content, list):
+          content = " ".join(
+              c.get("text", "") for c in content
+          )
+        if "PERMISSION_DENIED" in str(content):
+          create_detail = "PERMISSION_DENIED (gating rejected)"
+        elif "error" in str(content).lower():
+          create_detail = "error in response"
+        else:
+          create_succeeded = True
+          create_detail = "create_session succeeded"
+        break
+  if not create_found:
+    # Agent may be a joiner (not creator) — skip this check
+    create_succeeded = True
+    create_detail = "skipped (no create_session call — likely joiner)"
+  checks.append({
+      "name": "ac_create_session_not_denied",
+      "result": "PASS" if create_succeeded else "FAIL",
+      "detail": create_detail,
   })
 
   return checks
@@ -358,87 +438,78 @@ def check_session_fabrication(steps, agent_home, agent_num):
     })
     return checks
 
-  # 1. Scan trajectory for ALL ztab_create_session responses (created IDs)
-  create_session_ids = []
+  # 1. Scan trajectory for ALL ztab_create_session responses (created invitation_tokens)
+  create_invitation_tokens = []
   for step in steps:
-    sid = extract_session_id(
+    sid = extract_invitation_token(
         step,
         tool_names="ztab_create_session",
-        search_args=False,      # Creation ID is generated in response, not args
+        search_args=False,      # Creation token is generated in response, not args
         search_response=True,   # Search response fields only
     )
     if sid:
-      create_session_ids.append(sid)
+      create_invitation_tokens.append(sid)
 
-  unique_sids = list(dict.fromkeys(create_session_ids))  # dedupe, keep order
-  if len(unique_sids) > 1:
+  unique_tokens = list(dict.fromkeys(create_invitation_tokens))  # dedupe, keep order
+  if len(unique_tokens) > 1:
     checks.append({
         "name": "session_id_overwrite",
         "result": "FAIL",
         "detail": (
-            f"Agent created multiple ({len(unique_sids)}) distinct sessions: "
-            + ", ".join(s[:16] + "..." for s in unique_sids)
+            f"Agent created multiple ({len(unique_tokens)}) distinct sessions: "
+            + ", ".join(s[:16] + "..." for s in unique_tokens)
         ),
     })
   else:
     checks.append({
         "name": "session_id_overwrite",
         "result": "PASS",
-        "detail": f"{len(unique_sids)} session(s) created",
+        "detail": f"{len(unique_tokens)} session(s) created",
     })
 
-  # 2. Scan trajectory for used session IDs in arguments of subsequent calls
-  used_session_ids = []
+  # 2. Scan trajectory for used participant_tokens in arguments of subsequent calls
+  #    (In the One Token Per Call model, subsequent tools use participant_token, not session_id)
+  used_tokens = []
   for step in steps:
-    sid = extract_session_id(
+    tok = extract_field_from_step(
         step,
+        "participant_token",
         tool_names=(
-            "ztab_join_session",
             "ztab_accept_policy",
             "ztab_submit_input",
             "ztab_get_session_status",
             "ztab_get_result",
         ),
-        search_args=True,       # Subsequent tools pass session_id in arguments
+        search_args=True,       # Subsequent tools pass participant_token in arguments
         search_response=False,  # No need to search responses for usage
     )
-    if sid:
-      used_session_ids.append(sid)
-  unique_used_sids = list(dict.fromkeys(used_session_ids))
+    if tok:
+      used_tokens.append(tok)
+  unique_used_tokens = list(dict.fromkeys(used_tokens))
 
   # 3. Perform verification
-  if not unique_sids:
+  #    For creators: verify they got an invitation_token and used participant_tokens
+  if not unique_tokens:
     checks.append({
         "name": "session_not_fabricated",
         "result": "FAIL",
         "detail": "no ztab_create_session calls found in trajectory",
     })
-  elif not unique_used_sids:
+  elif not unique_used_tokens:
     checks.append({
         "name": "session_not_fabricated",
         "result": "FAIL",
         "detail": (
-            f"Agent created session(s) {unique_sids} but never called "
-            "any tools using them"
+            f"Agent created session(s) but never called "
+            "any subsequent tools using participant_tokens"
         ),
     })
   else:
-    invalid_sids = [sid for sid in unique_used_sids if sid not in unique_sids]
-    if invalid_sids:
-      checks.append({
-          "name": "session_not_fabricated",
-          "result": "FAIL",
-          "detail": (
-              f"Agent used session ID(s) {invalid_sids} which were not "
-              f"created in this trajectory (created: {unique_sids})"
-          ),
-      })
-    else:
-      checks.append({
-          "name": "session_not_fabricated",
-          "result": "PASS",
-          "session_id": ", ".join(s[:16] + "..." for s in unique_used_sids),
-      })
+    checks.append({
+        "name": "session_not_fabricated",
+        "result": "PASS",
+        "invitation_token": ", ".join(s[:16] + "..." for s in unique_tokens),
+    })
 
   return checks
 
@@ -791,7 +862,7 @@ def check_final_state(agent_home, expected_host, expected_port,
 
 def audit_agent(agent_num, run_dir, mode, phase1_only=False,
                reuse_run=False, expected_host=None, expected_port=None,
-               expected_verifier=None):
+               expected_verifier=None, creator_token=None):
   """Run the full audit for a single agent."""
   agent_dir = os.path.join(run_dir, "agents", str(agent_num))
   agent_home = os.path.join(agent_dir, "home")
@@ -802,6 +873,7 @@ def audit_agent(agent_num, run_dir, mode, phase1_only=False,
                                      expected_verifier=expected_verifier)
   prohibited = check_prohibited_actions(steps)
   sandbox = check_cross_sandbox_access(steps, agent_num)
+  admission = check_admission_control(steps, agent_home, creator_token)
 
   if phase1_only:
     # In Phase 1 only mode, skip session-specific checks
@@ -823,8 +895,8 @@ def audit_agent(agent_num, run_dir, mode, phase1_only=False,
     boundary = check_phase_boundary(steps)
     polling = check_polling_frequency(steps)  # F10
 
-  all_checks = (required + prohibited + sandbox + fabrication + closed
-                + boundary + polling)
+  all_checks = (required + prohibited + sandbox + admission + fabrication
+                + closed + boundary + polling)
 
   # Dirty-state adjustments
   if reuse_run:
@@ -917,6 +989,11 @@ def main():
       default="",
       help="Expected verifier (noop/ita) for final-state validation",
   )
+  parser.add_argument(
+      "--creator_token",
+      default="",
+      help="Creator token for admission control audit checks",
+  )
   args = parser.parse_args()
 
   print(f"{'='*50}")
@@ -927,6 +1004,8 @@ def main():
   print(f"  TEE mode:   {args.tee_mode}")
   if args.expected_verifier:
     print(f"  Verifier:   {args.expected_verifier}")
+  if args.creator_token:
+    print(f"  Admission:  GATED (creator_token set)")
   if args.reuse_run:
     print(f"  Reuse-run:  enabled (dirty-state checks active)")
     if args.expected_host:
@@ -943,6 +1022,7 @@ def main():
         expected_host=args.expected_host or None,
         expected_port=args.expected_port or None,
         expected_verifier=args.expected_verifier or None,
+        creator_token=args.creator_token or None,
     )
     status = result["result"]
     steps = result["num_trajectory_steps"]

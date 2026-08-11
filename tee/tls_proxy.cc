@@ -61,7 +61,6 @@ void TlsProxy::RemoveActiveSocket(int fd) {
   active_sockets_.erase(fd);
 }
 
-
 absl::Status TlsProxy::Start() {
   listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
   if (listen_fd_ < 0) {
@@ -144,7 +143,8 @@ void TlsProxy::ListenLoop() {
   while (!shutdown_) {
     sockaddr_in client_addr{};
     socklen_t client_len = sizeof(client_addr);
-    int client_fd = accept(listen_fd_, (struct sockaddr*)&client_addr, &client_len);
+    int client_fd =
+        accept(listen_fd_, (struct sockaddr*)&client_addr, &client_len);
     if (client_fd < 0) {
       if (shutdown_) break;
       LOG(ERROR) << "Accept failed: " << strerror(errno);
@@ -155,7 +155,8 @@ void TlsProxy::ListenLoop() {
     {
       std::unique_lock<std::mutex> throttle_lock(connection_throttle_mu_);
       connection_throttle_cv_.wait(throttle_lock, [this]() {
-        return active_connections_.load() < kMaxConcurrentConnections || shutdown_.load();
+        return active_connections_.load() < kMaxConcurrentConnections ||
+               shutdown_.load();
       });
       if (shutdown_.load()) {
         close(client_fd);
@@ -163,15 +164,19 @@ void TlsProxy::ListenLoop() {
       }
     }
 
-    auto fut = std::async(std::launch::async, &TlsProxy::HandleConnection, this, client_fd);
+    auto fut = std::async(std::launch::async, &TlsProxy::HandleConnection, this,
+                          client_fd);
     {
       std::lock_guard<std::mutex> lock(futures_mu_);
       futures_.push_back(std::move(fut));
       // Prune finished futures
-      futures_.erase(std::remove_if(futures_.begin(), futures_.end(),
-          [](const std::future<void>& f) {
-            return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-          }), futures_.end());
+      futures_.erase(
+          std::remove_if(futures_.begin(), futures_.end(),
+                         [](const std::future<void>& f) {
+                           return f.wait_for(std::chrono::seconds(0)) ==
+                                  std::future_status::ready;
+                         }),
+          futures_.end());
     }
   }
 }
@@ -213,7 +218,8 @@ void TlsProxy::HandleConnectionImpl(int client_fd) {
   // Get or re-use the cached SSL_CTX (rebuilt only when credentials rotate).
   SSL_CTX* raw_ctx = GetOrCreateSSLCtx();
   if (raw_ctx == nullptr) {
-    LOG(ERROR) << "Proxy: Failed to obtain SSL_CTX, closing connection (fd=" << client_fd << ")";
+    LOG(ERROR) << "Proxy: Failed to obtain SSL_CTX, closing connection (fd="
+               << client_fd << ")";
     close(client_fd);
     return;
   }
@@ -225,7 +231,7 @@ void TlsProxy::HandleConnectionImpl(int client_fd) {
   if (SSL_accept(ssl) <= 0) {
     LOG(WARNING) << "Proxy: TLS handshake failed.";
     // Print OpenSSL errors if any
-    unsigned long err; // NOLINT
+    unsigned long err;  // NOLINT
     while ((err = ERR_get_error()) != 0) {
       char buf[256];
       ERR_error_string_n(err, buf, sizeof(buf));
@@ -251,8 +257,10 @@ void TlsProxy::HandleConnectionImpl(int client_fd) {
   local_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
   local_addr.sin_port = htons(local_port_);
 
-  if (connect(local_fd, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
-    LOG(ERROR) << "Proxy: Failed to connect to local gRPC on port " << local_port_;
+  if (connect(local_fd, (struct sockaddr*)&local_addr, sizeof(local_addr)) <
+      0) {
+    LOG(ERROR) << "Proxy: Failed to connect to local gRPC on port "
+               << local_port_;
     close(local_fd);
     SSL_free(ssl);
     close(client_fd);
@@ -265,12 +273,13 @@ void TlsProxy::HandleConnectionImpl(int client_fd) {
 
   // 7. Start piping threads.
   // Note on Thread Safety (Design Decision): Concurrent SSL_read and SSL_write
-  // on the same SSL* object is technically not thread-safe in standard upstream OpenSSL.
-  // However, because we hermetically build and link against Google's BoringSSL (via our gRPC
-  // dependency), this full-duplex two-thread proxy pattern is explicitly supported and 100%
-  // thread-safe. BoringSSL maintains internal locks specifically for this use case. Do not
-  // request a mutex here, as it would unnecessarily block full-duplex multiplexing.
-  // One thread for Client -> local gRPC
+  // on the same SSL* object is technically not thread-safe in standard upstream
+  // OpenSSL. However, because we hermetically build and link against Google's
+  // BoringSSL (via our gRPC dependency), this full-duplex two-thread proxy
+  // pattern is explicitly supported and 100% thread-safe. BoringSSL maintains
+  // internal locks specifically for this use case. Do not request a mutex here,
+  // as it would unnecessarily block full-duplex multiplexing. One thread for
+  // Client -> local gRPC
   std::thread c_to_l([ssl, local_fd]() {
     char buf[8192];
     while (true) {
@@ -340,20 +349,23 @@ SSL_CTX* TlsProxy::GetOrCreateSSLCtx() {
   EphemeralCredentialGenerator generator;
   auto hash_or = generator.GenerateKeyAndGetHash();
   if (!hash_or.ok()) {
-    LOG(ERROR) << "Proxy: Key generation failed: " << hash_or.status().ToString();
+    LOG(ERROR) << "Proxy: Key generation failed: "
+               << hash_or.status().ToString();
     return nullptr;
   }
   std::string nonce = Base64UrlEncode(*hash_or);
 
   auto token_or = attestation_provider_->GetAttestationToken(nonce);
   if (!token_or.ok()) {
-    LOG(ERROR) << "Proxy: Failed to get attestation token: " << token_or.status().ToString();
+    LOG(ERROR) << "Proxy: Failed to get attestation token: "
+               << token_or.status().ToString();
     return nullptr;
   }
 
   auto cert_or = generator.GenerateCertificate(*token_or);
   if (!cert_or.ok()) {
-    LOG(ERROR) << "Proxy: Cert generation failed: " << cert_or.status().ToString();
+    LOG(ERROR) << "Proxy: Cert generation failed: "
+               << cert_or.status().ToString();
     return nullptr;
   }
 
@@ -375,11 +387,10 @@ SSL_CTX* TlsProxy::GetOrCreateSSLCtx() {
   SSL_CTX_set_alpn_select_cb(cached_ssl_ctx_, ALPNSelectCallback, nullptr);
 
   // Load cert into CTX.
-  BIO* cert_bio = BIO_new_mem_buf(cached_cert_pem_.data(),
-                                   cached_cert_pem_.size());
+  BIO* cert_bio =
+      BIO_new_mem_buf(cached_cert_pem_.data(), cached_cert_pem_.size());
   X509* cert = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr);
-  if (cert == nullptr ||
-      SSL_CTX_use_certificate(cached_ssl_ctx_, cert) <= 0) {
+  if (cert == nullptr || SSL_CTX_use_certificate(cached_ssl_ctx_, cert) <= 0) {
     LOG(ERROR) << "Proxy: Failed to load certificate into SSL_CTX.";
     X509_free(cert);
     BIO_free(cert_bio);
@@ -391,11 +402,10 @@ SSL_CTX* TlsProxy::GetOrCreateSSLCtx() {
   BIO_free(cert_bio);
 
   // Load key into CTX.
-  BIO* key_bio = BIO_new_mem_buf(cached_key_pem_.data(),
-                                  cached_key_pem_.size());
+  BIO* key_bio =
+      BIO_new_mem_buf(cached_key_pem_.data(), cached_key_pem_.size());
   EVP_PKEY* pkey = PEM_read_bio_PrivateKey(key_bio, nullptr, nullptr, nullptr);
-  if (pkey == nullptr ||
-      SSL_CTX_use_PrivateKey(cached_ssl_ctx_, pkey) <= 0) {
+  if (pkey == nullptr || SSL_CTX_use_PrivateKey(cached_ssl_ctx_, pkey) <= 0) {
     LOG(ERROR) << "Proxy: Failed to load private key into SSL_CTX.";
     EVP_PKEY_free(pkey);
     BIO_free(key_bio);

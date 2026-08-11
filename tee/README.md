@@ -42,10 +42,10 @@ proving the key was generated inside a genuine TEE.
 
 | File | Description |
 | :--- | :--- |
-| `main.cc` | Server entry point. Key generation, attestation, certificate creation, gRPC startup. Contains `AgentBrokerService` (Echo + LLM inference). |
+| `main.cc` | Server entry point. Key generation, attestation, certificate creation, gRPC startup. Registers `AgentBrokerService` with session lifecycle, LLM inference, `PolicyRegistry`, and optional admission control (`--creator_token`). |
 | `tls_cert_generator.h/.cc` | `EphemeralCredentialGenerator` class. EC key generation, public key hashing, X.509 cert with embedded attestation extension. |
 | `llama_engine.h/.cc` | LLM inference engine wrapping llama.cpp. Loads GGUF models and generates completions. |
-| `session_manager.proto` | Protobuf service definition for `AgentBrokerService`. Currently `Echo`; will be extended. |
+| `session_manager.proto` | Protobuf service definition for `AgentBrokerService`: session lifecycle RPCs and `Echo`. |
 | `BUILD` | Bazel build rules for proto, gRPC stubs, TLS cert lib, server binary, and OCI image targets. |
 | `MODULE.bazel` | Bazel module definition with external deps and OCI image packaging. |
 | `model_targets.bzl` | Macro generating per-model OCI image targets (local and GCP variants). |
@@ -53,6 +53,9 @@ proving the key was generated inside a genuine TEE.
 | `build_defs.bzl` | `define_load_runner` genrule for `bazel run` → `docker load` workflow. |
 | `run_server.sh` | Helper to build the OCI image and run the container locally via Docker. |
 | `.bazelversion` | Pins Bazel to 8.2.1 via Bazelisk. |
+| `session_manager.h/.cc` | Multi-agent session state machine. Lifecycle RPCs, reverse-index token auth, lazy timeout enforcement. |
+| `policy_registry.h/.cc` | Loads policy definitions (prompt templates + JSON schemas) from `--policy_dir` at startup. |
+| `session_manager_test.cc` | 20 unit tests for session lifecycle, admission control, timeout, and error handling. |
 
 ## Building
 
@@ -78,6 +81,10 @@ cd tee
 
 # Custom port, detached:
 ./run_server.sh --port 9000 -d
+
+# With admission control (token-gated session creation):
+./run_server.sh --llm --gcs_bucket gs://your-model-bucket \
+    --creator_token SECRET
 ```
 
 Model weights are downloaded from GCS via Bazel's `gcs_file`
@@ -100,8 +107,17 @@ The resulting binary is at `bazel-bin/ztab_server`.
 ### Running the Binary Directly
 
 ```bash
-./bazel-bin/ztab_server [port]   # default: 8000
+./bazel-bin/ztab_server \
+    --port=8000 \
+    --policy_dir=examples/calendar/ \
+    --model_path=/path/to/model.gguf \
+    --creator_token=SECRET            # optional admission control
 ```
+
+The `creator_token` can also be set via the `CREATOR_TOKEN`
+environment variable. If `--creator_token` is empty, the
+server checks `CREATOR_TOKEN` in the environment. The flag
+takes precedence over the env var.
 
 ## Dependencies
 
@@ -118,6 +134,7 @@ All dependencies are fetched automatically by Bazel via
 | rules_oci | 2.2.6 | OCI image packaging |
 | rules_pkg | 1.1.0 | `pkg_tar` for image layering |
 | CUDA 12.2 | (optional) | GPU inference via `--//:enable_cuda=true` |
+| googletest | 1.15.2 | Unit testing framework |
 
 ## Architecture Notes
 
@@ -161,10 +178,12 @@ public key. This cryptographic binding ensures that:
 *   The client can verify that the TLS connection terminates
     inside the attested TEE.
 
-### Future: Session Management
+### Session Management
 
-The `AgentBrokerService` will be extended with session
-lifecycle RPCs: `CreateSession`, `JoinSession`, `SubmitInput`,
-`GetOutcome`. These will coordinate multi-party private LLM
-sessions where agents from different entities submit private
-inputs to a shared Gemma model running inside the TEE.
+The `AgentBrokerService` implements the full session lifecycle:
+`CreateSession`, `JoinSession`, `AcceptPolicy`, `SubmitInput`,
+`GetResult`, and `GetSessionStatus`. These RPCs coordinate
+multi-party private LLM sessions where agents from different
+entities submit private inputs to a shared model running inside
+the TEE. See `session_manager.h` for the state machine and
+`session_manager.proto` for the service definition.

@@ -207,29 +207,44 @@ trailing arguments to the Docker run command):
 | `--gcp_zone ZONE` | *None* | GCP zone for `gcp_discover` mode VM IP resolution. |
 | `--gcp_image_base URL` | *None* | GCP Artifact Registry image base URL for `gcp_discover` mode TEE setup. |
 | `--workspace_id URI` | *None* | Workspace folder URI (defaults to `file://ZTAB_DIR`). |
+| `--creator_token TOKEN` | *None* | Creator token for admission control testing. Passed to TEE server and injected into agent backends config. |
+
+### With Admission Control
+
+```bash
+./test_cold_start.sh \
+    --ztab_dir /path/to/ztab \
+    --num_agents 2 \
+    --creator_token MY_SECRET_TOKEN
+```
 
 ---
 
 ## 5. Troubleshooting
 
 ### 1. `Permission denied` on `/tmp/ztab_runs`
-*   **Cause**: `/tmp/ztab_runs` did not exist on the host VM before launching
-    the container. Docker automatically created it as `root`.
+*   **Cause**: `/tmp/ztab_runs` did not exist on the
+    host VM before launching the container. Docker
+    automatically created it as `root`.
 *   **Fix**: Stop the container, delete the directory
     (`sudo rm -rf /tmp/ztab_runs`), pre-create it manually
     (`mkdir -p /tmp/ztab_runs`), and run again.
 
 ### 2. `unknown model key` or startup crash
-*   **Cause**: The public LS binary cannot resolve `MODEL_GOOGLE_GEMINI_2_5_FLASH`
-    because it did not download the configuration registry.
+*   **Cause**: The public LS binary cannot resolve
+    `MODEL_GOOGLE_GEMINI_2_5_FLASH` because it did not
+    download the configuration registry.
 *   **Fix**: Verify you passed
     `--ls_extra_flags "--cloud_code_endpoint=https://cloudcode-pa.googleapis.com"`.
 
 ### 3. Trajectory Audit Failure: `CLI fallback — agent executed cli.py`
-*   **Cause**: The agent could not find the native ZTAB MCP tools, so it fell
-    back to executing the raw python helper client `cli.py` (which is rejected
-    by the audit). This happens when the Language Server failed to read
-    `mcp_config.json` inside the sandbox due to a root permission lock.
-*   **Fix**: Verify the container is launched with `--user $(id -u):$(id -g)` and
-    `HOME` mapped correctly, and check that `~/.gemini` on the host VM is owned
-    by your user, not root.
+*   **Cause**: The agent could not find the native ZTAB
+    MCP tools, so it fell back to executing the raw python
+    helper client `cli.py` (which is rejected by the
+    audit). This happens when the Language Server failed to
+    read `mcp_config.json` inside the sandbox due to a root
+    permission lock.
+*   **Fix**: Verify the container is launched with
+    `--user $(id -u):$(id -g)` and `HOME` mapped correctly,
+    and check that `~/.gemini` on the host VM is owned by
+    your user, not root.

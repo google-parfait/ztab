@@ -13,19 +13,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Sets up a Python virtual environment and outputs the MCP configuration block.
+# Installs the ZTAB MCP server: creates a Python virtual environment,
+# installs dependencies, configures backends, and registers the MCP
+# server in the agent's config.  One command does everything.
 #
 # Usage:
-#   ./agent/install_mcp.sh [venv_path]
-#   ./agent/install_mcp.sh --add-backend ID HOST PORT [--verifier TYPE] \
-#       [--digest DIGEST] [--allow-debug-tee] [--set-default]
+#   ./agent/install_mcp.sh [options]
+#
+# Examples:
+#   # Basic install (default dev-local backend on localhost:8000):
+#   bash agent/install_mcp.sh
+#
+#   # Install and configure a specific backend:
+#   bash agent/install_mcp.sh --add-backend my-tee HOST PORT --set-default
+#
+#   # With admission control:
+#   bash agent/install_mcp.sh --add-backend my-tee HOST PORT \
+#       --creator-token TOKEN --set-default
 #
 # Default venv_path is ~/.ztab-venv
 
 set -e
 
 # --- CLI Parsing ---
-MODE="install"
 VENV_PATH=""
 BACKEND_ID=""
 BACKEND_HOST=""
@@ -34,12 +44,12 @@ BACKEND_VERIFIER="noop"
 BACKEND_DIGEST=""
 BACKEND_ALLOW_DEBUG="true"
 BACKEND_SET_DEFAULT="false"
-REGISTER_MCP="false"
+BACKEND_CREATOR_TOKEN=""
+REGISTER_MCP="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --add-backend)
-      MODE="add-backend"
       BACKEND_ID="$2"; BACKEND_HOST="$3"; BACKEND_PORT="$4"
       shift 4
       ;;
@@ -55,31 +65,40 @@ while [[ $# -gt 0 ]]; do
     --no-debug-tee)
       BACKEND_ALLOW_DEBUG="false"; shift
       ;;
+    --creator-token)
+      BACKEND_CREATOR_TOKEN="$2"; shift 2
+      ;;
     --set-default)
       BACKEND_SET_DEFAULT="true"; shift
       ;;
+    --do-not-register)
+      REGISTER_MCP="false"; shift
+      ;;
     --register)
+      # Accepted for backward compatibility (already the default).
       REGISTER_MCP="true"; shift
       ;;
     --help|-h)
       echo "Usage:"
-      echo "  Install mode:     ./install_mcp.sh [--register] [venv_path]"
-      echo "  Add backend mode: ./install_mcp.sh --add-backend ID HOST PORT [options]"
+      echo "  ./install_mcp.sh [options]"
       echo ""
-      echo "Options for install mode:"
-      echo "  --register            Auto-register ztab in ~/.gemini/config/mcp_config.json"
+      echo "Installs the ZTAB MCP server (venv + deps + registration)."
+      echo "If --add-backend is given, also configures that backend."
       echo ""
-      echo "Options for --add-backend:"
-      echo "  --verifier TYPE       Verifier type: noop|ita (default: noop)"
-      echo "  --digest DIGEST       Expected image digest (default: empty)"
-      echo "  --allow-debug-tee     Allow debug TEE (default)"
-      echo "  --no-debug-tee        Reject debug TEE (for production)"
-      echo "  --set-default         Make this the default backend"
+      echo "Options:"
+      echo "  --add-backend ID HOST PORT  Configure a TEE backend"
+      echo "  --verifier TYPE             Verifier: noop|ita (default: noop)"
+      echo "  --digest DIGEST             Expected image digest (default: empty)"
+      echo "  --allow-debug-tee           Allow debug TEE (default)"
+      echo "  --no-debug-tee              Reject debug TEE (for production)"
+      echo "  --creator-token TOKEN       Creator token for admission control"
+      echo "  --set-default               Make this the default backend"
+      echo "  --do-not-register           Skip mcp_config.json registration"
       exit 0
       ;;
     *)
-      # Positional arg: venv_path (install mode only)
-      if [ "$MODE" = "install" ] && [ -z "$VENV_PATH" ]; then
+      # Positional arg: venv_path
+      if [ -z "$VENV_PATH" ]; then
         VENV_PATH="$1"
       fi
       shift
@@ -87,17 +106,56 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- Add Backend Mode ---
-if [ "$MODE" = "add-backend" ]; then
-  if [ -z "$BACKEND_ID" ] || [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
+# --- Step 1: Virtual Environment ---
+VENV_PATH="${VENV_PATH:-$HOME/.ztab-venv}"
+# Ensure absolute path using python (portable across Linux/macOS)
+VENV_PATH=$(python3 -c "import os, sys; print(os.path.abspath(sys.argv[1]))" "$VENV_PATH")
+# Ensure we know where the mcp_server.py is relative to this script
+AGENT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+MCP_SERVER_PATH="${AGENT_DIR}/mcp_server.py"
+
+if [ -d "$VENV_PATH" ]; then
+  echo "Existing virtual environment found at ${VENV_PATH}. Verifying..."
+  if "${VENV_PATH}/bin/python3" -c "import cryptography, grpc, jwt" 2>/dev/null; then
+    echo "Virtual environment is functional. Skipping creation."
+  else
+    echo "Virtual environment is corrupted or Python version changed. Recreating..."
+    python3 -m venv --clear "${VENV_PATH}"
+  fi
+else
+  echo "Creating virtual environment at ${VENV_PATH}..."
+  python3 -m venv "${VENV_PATH}"
+fi
+
+echo "Activating virtual environment..."
+source "${VENV_PATH}/bin/activate"
+
+echo "Installing ZTAB dependencies..."
+pip install --upgrade pip || true
+pip install -r "${AGENT_DIR}/requirements.txt" || {
+  echo "Falling back to direct PyPI index (e.g. if on a restricted Corp network)..."
+  pip install --extra-index-url https://pypi.org/simple/ -r "${AGENT_DIR}/requirements.txt"
+}
+
+# --- Step 2: Backends Configuration ---
+BACKENDS_DIR="$HOME/.ztab"
+BACKENDS_FILE="${BACKENDS_DIR}/backends.json"
+
+if [ -n "$BACKEND_ID" ]; then
+  # --add-backend was specified: configure that backend.
+  if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
     echo "Error: --add-backend requires ID HOST PORT arguments." >&2
-    echo "Usage: ./install_mcp.sh --add-backend my-tee 10.0.0.1 8000" >&2
     exit 1
   fi
 
-  BACKENDS_DIR="$HOME/.ztab"
-  BACKENDS_FILE="${BACKENDS_DIR}/backends.json"
   mkdir -p "$BACKENDS_DIR"
+
+  # Build optional creator_token line for JSON entry.
+  CREATOR_TOKEN_LINE=""
+  if [ -n "$BACKEND_CREATOR_TOKEN" ]; then
+    CREATOR_TOKEN_LINE=",
+  \"creator_token\": \"${BACKEND_CREATOR_TOKEN}\""
+  fi
 
   NEW_ENTRY=$(cat <<ENTRY_EOF
 {
@@ -107,7 +165,7 @@ if [ "$MODE" = "add-backend" ]; then
   "port": ${BACKEND_PORT},
   "verifier": "${BACKEND_VERIFIER}",
   "expected_digest": "${BACKEND_DIGEST}",
-  "allow_debug_tee": ${BACKEND_ALLOW_DEBUG}
+  "allow_debug_tee": ${BACKEND_ALLOW_DEBUG}${CREATOR_TOKEN_LINE}
 }
 ENTRY_EOF
 )
@@ -159,44 +217,9 @@ os.replace(tmp, '${BACKENDS_FILE}')
   if [ "$BACKEND_SET_DEFAULT" = "true" ]; then
     echo "Set '${BACKEND_ID}' as default backend."
   fi
-  exit 0
-fi
 
-# --- Install Mode ---
-VENV_PATH="${VENV_PATH:-$HOME/.ztab-venv}"
-# Ensure absolute path using python (portable across Linux/macOS)
-VENV_PATH=$(python3 -c "import os, sys; print(os.path.abspath(sys.argv[1]))" "$VENV_PATH")
-# Ensure we know where the mcp_server.py is relative to this script
-AGENT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-MCP_SERVER_PATH="${AGENT_DIR}/mcp_server.py"
-
-if [ -d "$VENV_PATH" ]; then
-  echo "Existing virtual environment found at ${VENV_PATH}. Verifying..."
-  if "${VENV_PATH}/bin/python3" -c "import cryptography, grpc, jwt" 2>/dev/null; then
-    echo "Virtual environment is functional. Skipping creation."
-  else
-    echo "Virtual environment is corrupted or Python version changed. Recreating..."
-    python3 -m venv --clear "${VENV_PATH}"
-  fi
-else
-  echo "Creating virtual environment at ${VENV_PATH}..."
-  python3 -m venv "${VENV_PATH}"
-fi
-
-echo "Activating virtual environment..."
-source "${VENV_PATH}/bin/activate"
-
-echo "Installing ZTAB dependencies..."
-pip install --upgrade pip
-pip install -r "${AGENT_DIR}/requirements.txt" || {
-  echo "Falling back to direct PyPI index (e.g. if on a restricted Corp network)..."
-  pip install --extra-index-url https://pypi.org/simple/ -r "${AGENT_DIR}/requirements.txt"
-}
-
-BACKENDS_DIR="$HOME/.ztab"
-BACKENDS_FILE="${BACKENDS_DIR}/backends.json"
-
-if [ ! -f "$BACKENDS_FILE" ]; then
+elif [ ! -f "$BACKENDS_FILE" ]; then
+  # No --add-backend and no existing config: create default.
   echo "Creating default ZTAB backends configuration at ${BACKENDS_FILE}..."
   mkdir -p "$BACKENDS_DIR"
   cat <<'EOF' > "$BACKENDS_FILE"
@@ -219,7 +242,7 @@ if [ ! -f "$BACKENDS_FILE" ]; then
 EOF
 fi
 
-# --- Register in MCP config (if --register) ---
+# --- Step 3: Register in MCP config ---
 if [ "$REGISTER_MCP" = "true" ]; then
   MCP_CONFIG="$HOME/.gemini/config/mcp_config.json"
   mkdir -p "$(dirname "$MCP_CONFIG")"
@@ -265,5 +288,5 @@ else
 EOF
   echo ""
   echo "------------------------------------------------------------"
-  echo "Or re-run with --register to do this automatically."
+  echo "Or re-run without --do-not-register to do this automatically."
 fi

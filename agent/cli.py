@@ -25,15 +25,15 @@ Usage:
     # Session workflow (two terminals):
     # Terminal 1 (creator):
     python3 cli.py create-session --policy ScheduleOverlap --participants 2
-    python3 cli.py get-status --session-id <SID>
-    python3 cli.py submit-input --session-id <SID> --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z"]}'
-    python3 cli.py get-result --session-id <SID> --token <TOK>
+    python3 cli.py get-status --token <TOK>
+    python3 cli.py submit-input --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z"]}'
+    python3 cli.py get-result --token <TOK>
 
     # Terminal 2 (joiner):
-    python3 cli.py join-session --session-id <SID>
-    python3 cli.py accept-policy --session-id <SID> --token <TOK>
-    python3 cli.py submit-input --session-id <SID> --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z","2026-07-01T14:00:00Z"]}'
-    python3 cli.py get-result --session-id <SID> --token <TOK>
+    python3 cli.py join-session --invitation-token <ITOK>
+    python3 cli.py accept-policy --token <TOK>
+    python3 cli.py submit-input --token <TOK> --input '{"available_slots":["2026-07-01T10:00:00Z","2026-07-01T14:00:00Z"]}'
+    python3 cli.py get-result --token <TOK>
 """
 
 import argparse
@@ -109,15 +109,42 @@ def cmd_create_session(args):
         if args.output_schema:
             policy.output_schema_json = args.output_schema
 
-        request = session_manager_pb2.CreateSessionRequest(policy=policy)
-        response = stub.CreateSession(request)
+        metadata = []
+        creator_token = args.creator_token
+        if creator_token:
+            metadata.append(
+                ('x-ztab-creator-token', creator_token)
+            )
+
+        request = session_manager_pb2.CreateSessionRequest(
+            policy=policy,
+            client_nonce=args.client_nonce,
+        )
+        response = stub.CreateSession(
+            request, metadata=metadata or None
+        )
 
         print(f"Session created successfully.")
-        print(f"  session_id: {response.session_id}")
-        print(f"  state:      {session_manager_pb2.SessionState.Name(response.state)}")
-        print(f"  token:      {response.participant_token}")
-        print(f"\nShare the session_id with other participants.")
-        print(f"Your token is secret — use it for subsequent RPCs.")
+        print(
+            f"  invitation_token:"
+            f" {response.invitation_token}"
+        )
+        print(
+            f"  state:           "
+            f" {session_manager_pb2.SessionState.Name(response.state)}"
+        )
+        print(
+            f"  token:           "
+            f" {response.participant_token}"
+        )
+        print(
+            f"\nShare the invitation_token with"
+            f" other participants."
+        )
+        print(
+            f"Your token is secret —"
+            f" use it for subsequent RPCs."
+        )
     finally:
         channel.close()
 
@@ -127,8 +154,9 @@ def cmd_join_session(args):
     stub, channel = _make_stub(args)
     try:
         request = session_manager_pb2.JoinSessionRequest(
-            session_id=args.session_id,
+            invitation_token=args.invitation_token,
             role=args.role or "",
+            client_nonce=args.client_nonce or "",
         )
         response = stub.JoinSession(request)
 
@@ -147,7 +175,6 @@ def cmd_accept_policy(args):
     stub, channel = _make_stub(args)
     try:
         request = session_manager_pb2.AcceptPolicyRequest(
-            session_id=args.session_id,
             participant_token=args.token,
         )
         response = stub.AcceptPolicy(request)
@@ -181,7 +208,6 @@ def cmd_submit_input(args):
             sys.exit(1)
 
         request = session_manager_pb2.SubmitInputRequest(
-            session_id=args.session_id,
             participant_token=args.token,
             input_json=input_json,
         )
@@ -205,7 +231,6 @@ def cmd_get_result(args):
     stub, channel = _make_stub(args)
     try:
         request = session_manager_pb2.GetResultRequest(
-            session_id=args.session_id,
             participant_token=args.token,
         )
         response = stub.GetResult(request)
@@ -238,7 +263,6 @@ def cmd_get_status(args):
     stub, channel = _make_stub(args)
     try:
         request = session_manager_pb2.GetSessionStatusRequest(
-            session_id=args.session_id,
             participant_token=args.token,
         )
         response = stub.GetSessionStatus(request)
@@ -253,7 +277,7 @@ def cmd_get_status(args):
         channel.close()
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         description="ZTAB CLI — Agent Broker client for Echo and Session RPCs.",
     )
@@ -272,23 +296,24 @@ def main():
     create_parser.add_argument("--timeout", type=int, default=300, help="Per-state timeout in seconds")
     create_parser.add_argument("--input-schema", default="", help="JSON Schema for input validation (optional)")
     create_parser.add_argument("--output-schema", default="", help="JSON Schema for output validation (optional)")
+    create_parser.add_argument("--creator-token", default="", help="Creator token for admission control (optional)")
+    create_parser.add_argument("--client-nonce", default="", help="Optional UUID for idempotent retry")
 
     # --- join-session ---
     join_parser = subparsers.add_parser("join-session", help="Join an existing session")
     _add_connection_args(join_parser)
-    join_parser.add_argument("--session-id", required=True, help="Session ID to join")
+    join_parser.add_argument("--invitation-token", required=True, help="Invitation token from session creator")
+    join_parser.add_argument("--client-nonce", default="", help="Optional UUID for idempotent retry")
     join_parser.add_argument("--role", default="", help="Role for role-based policies (Phase 2+)")
 
     # --- accept-policy ---
     accept_parser = subparsers.add_parser("accept-policy", help="Accept the session policy")
     _add_connection_args(accept_parser)
-    accept_parser.add_argument("--session-id", required=True, help="Session ID")
     accept_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
 
     # --- submit-input ---
     submit_parser = subparsers.add_parser("submit-input", help="Submit private input to the session")
     _add_connection_args(submit_parser)
-    submit_parser.add_argument("--session-id", required=True, help="Session ID")
     submit_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
     submit_parser.add_argument(
         "--input", required=True,
@@ -298,15 +323,18 @@ def main():
     # --- get-result ---
     result_parser = subparsers.add_parser("get-result", help="Get the session result")
     _add_connection_args(result_parser)
-    result_parser.add_argument("--session-id", required=True, help="Session ID")
     result_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
 
     # --- get-status ---
     status_parser = subparsers.add_parser("get-status", help="Get current session status")
     _add_connection_args(status_parser)
-    status_parser.add_argument("--session-id", required=True, help="Session ID")
     status_parser.add_argument("--token", default=os.environ.get("ZTAB_TOKEN"), help="Your participant token (or set ZTAB_TOKEN)")
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command is None:

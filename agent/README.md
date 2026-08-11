@@ -49,14 +49,18 @@ Google's Confidential Computing OIDC public keys.
 | File | Description |
 | :--- | :--- |
 | `client.py` | Core library. `ZtabChannel` class: TLS cert fetching, ASN.1 attestation extraction, gRPC channel setup. Pluggable `verifier` callbacks. |
-| `mcp_server.py` | Stdio-based MCP server exposing `ztab_test_connection`. Redirects `stdout` to `stderr` to protect JSON-RPC. |
+| `mcp_server.py` | Stdio-based MCP server exposing ZTAB session tools. Named backend resolution, channel caching, lazy config reloading. |
 | `SKILL.md` | Agent skill definition. Tells agents (e.g., Gemini CLI, Antigravity) how to bootstrap ZTAB. |
-| `cli.py` | Standalone CLI tester. Connect, verify attestation, call `Echo`. |
+| `cli.py` | Standalone CLI for session lifecycle RPCs and `Echo`. |
 | `diagnose_tls.py` | TLS diagnostic (no `grpcio` needed). Uses `ssl` + `cryptography` only. |
 | `smoke_test.py` | Automated MCP smoke test. JSON-RPC lifecycle validation. |
 | `generate_protos.py` | Compile `session_manager.proto` → `pb2/` stubs. |
 | `pb2/` | Generated protobuf and gRPC stubs. |
 | `requirements.txt` | Python deps: `grpcio`, `grpcio-tools`, `cryptography`. |
+| `attestation.py` | Extracts attestation tokens from X.509 certificate extensions (OID parsing, ASN.1 unwrapping). |
+| `ita_verifier.py` | Full Intel Trust Authority JWT verification: signature, claims, key-binding, container digest. |
+| `verifier_factory.py` | Factory for selecting verifier by name (`noop` or `ita`). |
+| `install_mcp.sh` | Automated MCP server registration and backend configuration. Supports `--add-backend`, `--creator-token`. |
 
 ## Setup
 
@@ -89,6 +93,16 @@ This generates `pb2/session_manager_pb2.py` and
 `pb2/session_manager_pb2_grpc.py` from
 `tee/session_manager.proto`.
 
+### Automated Setup (Recommended)
+
+Use `install_mcp.sh` to install dependencies, compile protos,
+and register the MCP server in one step:
+
+```bash
+agent/install_mcp.sh \
+    --backend-id local --host localhost --port 8000
+```
+
 ## Usage
 
 ### CLI Tester
@@ -106,6 +120,32 @@ python3 cli.py --host <GCP_IP> --port 8000 \
 
 This connects to the server, extracts the attestation report,
 calls `Echo`, and prints the response.
+
+### Session Lifecycle CLI
+
+```bash
+# Create a session:
+python3 cli.py --host localhost --port 8000 \
+    create-session --policy ScheduleOverlap \
+    --participants 2 --creator-token SECRET
+
+# Join a session:
+python3 cli.py --host localhost --port 8000 \
+    join-session --invitation-token TOKEN
+
+# Submit private input:
+python3 cli.py --host localhost --port 8000 \
+    submit-input --token TOKEN \
+    --input '{"calendar": [...]}'
+
+# Get result:
+python3 cli.py --host localhost --port 8000 \
+    get-result --token TOKEN
+
+# Check session status:
+python3 cli.py --host localhost --port 8000 \
+    get-status --token TOKEN
+```
 
 ### TLS Diagnostics (no grpcio needed)
 
@@ -139,6 +179,33 @@ client's MCP configuration. For example:
     }
   }
 }
+```
+
+### Backend Configuration
+
+The MCP server resolves TEE backends by name from
+`~/.ztab/backends.json` (or `$ZTAB_BACKENDS_FILE`). Each
+backend entry specifies connection and security parameters:
+
+| Field | Description |
+| :--- | :--- |
+| `backend_id` | Unique identifier for this backend. |
+| `host` | TEE server hostname or IP. |
+| `port` | TEE server port. |
+| `verifier` | Attestation verifier: `noop` (dev) or `ita` (prod). |
+| `expected_digest` | Expected container image digest (for `ita`). |
+| `allow_debug_tee` | Allow debug TEE attestation tokens. |
+| `creator_token` | Optional. Token for admission-controlled servers. |
+
+Use `install_mcp.sh` for automated setup:
+
+```bash
+agent/install_mcp.sh \
+    --backend-id gcp-prod \
+    --host 10.0.0.1 --port 8000 \
+    --verifier ita \
+    --expected-digest sha256:abc123... \
+    --creator-token SECRET
 ```
 
 ### Smoke Test
@@ -186,6 +253,14 @@ connection. This allows different trust policies:
 *   Custom verifiers can check specific `image_digest` values,
     require `secboot: true`, or validate the JWT signature
     against known public keys.
+
+The `verifier_factory.py` module provides a factory function
+that returns the appropriate verifier callback by name:
+
+| Name | Module | Description |
+| :--- | :--- | :--- |
+| `noop` | (built-in) | Accepts any attestation. For development. |
+| `ita` | `ita_verifier.py` | Full ITA verification: JWT signature, claims, key-binding, digest. |
 
 ### stdout Protection
 

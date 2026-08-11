@@ -21,13 +21,13 @@
 #
 # Usage:
 #   gcp/build_and_push.sh \
-#       --ztab_dir ~/ztab1/ztab \
+#       --ztab_dir <path_to_ztab> \
 #       --image_base us-docker.pkg.dev/myproject/myrepo/ztab-server \
 #       --gcs_bucket gs://my-model-weights \
 #       --model gemma4_e4b
 #
 #   gcp/build_and_push.sh \
-#       --ztab_dir ~/ztab1/ztab \
+#       --ztab_dir <path_to_ztab> \
 #       --image_base us-docker.pkg.dev/myproject/myrepo/ztab-server \
 #       --no_model
 

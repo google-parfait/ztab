@@ -23,38 +23,56 @@ tools are available in your environment.
 
 ### First-Time Setup
 
-1. Run the install script with `--register`:
-
-   ```bash
-   bash agent/install_mcp.sh --register
-   ```
-
-   This does three things:
-   - Creates a Python virtualenv with ZTAB dependencies
-   - Generates a default `~/.ztab/backends.json` file with a
-     `dev-local` backend pointing to `localhost:8000`
-   - Registers the `ztab` MCP server in your agent config
-     (`~/.gemini/config/mcp_config.json`)
-
-   You do NOT need to edit any JSON files manually.
-
-   **Checkpoint:** Verify the script prints
-   `✅ Registered ztab in ~/.gemini/config/mcp_config.json`.
-
-2. If you need to connect to a different TEE server (not the
-   default `localhost:8000`), see "Connecting to a New TEE" below.
-
-### Connecting to a New TEE
-
-To connect to a TEE server not already in your configuration:
-
-#### Option 1: CLI (Recommended)
-
-Use the installer's `--add-backend` command:
+Run the install script with all your backend details:
 
 ```bash
-# Development/preview TEE (no attestation):
-bash agent/install_mcp.sh --add-backend my-tee HOST PORT --set-default
+bash agent/install_mcp.sh --add-backend NAME HOST PORT \
+    --set-default [options]
+```
+
+This single command does everything:
+- Creates a Python virtualenv with ZTAB dependencies
+- Configures the specified backend in `~/.ztab/backends.json`
+- Registers the `ztab` MCP server in your agent config
+  (`~/.gemini/config/mcp_config.json`)
+
+You do NOT need to edit any JSON files manually.
+
+**Checkpoint:** Verify the script prints
+`✅ Registered ztab in ~/.gemini/config/mcp_config.json`.
+
+If no `--add-backend` is given, a default `dev-local` backend
+pointing to `localhost:8000` is created.
+
+The script is safe to re-run. It skips venv creation if the
+environment already exists and is functional.
+
+### Adding More Backends
+
+To add another backend after initial setup, run the same
+script again with new `--add-backend` details:
+
+```bash
+bash agent/install_mcp.sh --add-backend prod-tee HOST PORT \
+    --verifier ita \
+    --digest "sha256:ACTUAL_DIGEST" \
+    --no-debug-tee \
+    --set-default
+```
+
+The venv and registration steps will be skipped if already
+done. Only the new backend entry is added.
+
+#### Examples
+
+```bash
+# Development TEE (no attestation):
+bash agent/install_mcp.sh --add-backend my-tee HOST PORT \
+    --set-default
+
+# With admission control (creator token):
+bash agent/install_mcp.sh --add-backend my-tee HOST PORT \
+    --creator-token TOKEN --set-default
 
 # Production GCP Confidential Space TEE:
 bash agent/install_mcp.sh --add-backend prod-tee HOST PORT \
@@ -64,16 +82,21 @@ bash agent/install_mcp.sh --add-backend prod-tee HOST PORT \
     --set-default
 ```
 
-Options:
-- `--verifier TYPE` — `noop` (default, no attestation) or `ita` (production)
+#### Options
+
+- `--verifier TYPE` — `noop` (default, no attestation) or `ita`
 - `--digest DIGEST` — Expected container image digest
 - `--allow-debug-tee` — Accept debug TEE (default)
 - `--no-debug-tee` — Reject debug TEE (for production)
+- `--creator-token TOKEN` — Pre-shared token for admission control
 - `--set-default` — Make this the default backend
+- `--do-not-register` — Skip `mcp_config.json` registration
+  (use when the default registration path doesn't apply)
 
-#### Option 2: Manual JSON edit
+### Manual JSON Edit
 
-Only use this if the CLI is not available.
+Only use this if the CLI is not available or if your
+environment requires a non-standard configuration path.
 
 1. Open `~/.ztab/backends.json`.
 2. Add a new entry to the `backends` array:
@@ -90,6 +113,9 @@ Only use this if the CLI is not available.
    }
    ```
 
+   If the TEE requires admission control, add:
+   - `"creator_token": "TOKEN_VALUE"`
+
    For production GCP Confidential Space TEEs, use:
    - `"verifier": "ita"`
    - `"expected_digest": "sha256:ACTUAL_DIGEST"`
@@ -98,7 +124,7 @@ Only use this if the CLI is not available.
 3. Optionally set `"default_backend": "my-tee"` at the top level
    if this should be the default.
 
-#### After adding a backend
+### After Setup
 
 The MCP server reads the config at startup. If it is already
 running, it must be restarted for changes to take effect.
@@ -129,7 +155,6 @@ agents want to find a common meeting time without revealing their
 calendars to each other, they create a ZTAB session for that purpose.
 
 - Each session runs on a ZTAB server inside a TEE.
-- Each session has a unique `session_id`.
 - Each session has a fixed number of participants, set at creation time.
 - If agents need to compute two different things (e.g., schedule two
   different meetings), those are two separate sessions.
@@ -139,10 +164,10 @@ calendars to each other, they create a ZTAB session for that purpose.
 Every participant in a session has one of two roles:
 
 - **CREATOR**: The agent that creates the session. The CREATOR calls
-  `ztab_create_session`, gets back a `session_id`, and shares it with
-  the other participants (typically via the user).
+  `ztab_create_session`, gets back an `invitation_token`, and shares it
+  with the other participants (typically via the user).
 
-- **JOINER**: Every other agent. A JOINER receives the `session_id`
+- **JOINER**: Every other agent. A JOINER receives the `invitation_token`
   from the user or another channel, then calls `ztab_join_session`.
 
 Both roles must submit their private input. Both roles receive the
@@ -173,11 +198,11 @@ OPEN → SEALED → CALCULATING → CLOSED
 | `ztab_test_connection` | Verify TEE server is reachable | `message` |
 | `ztab_list_backends` | List configured backends | (none) |
 | `ztab_create_session` | Create a new session | `policy_class`, `expected_participants` |
-| `ztab_join_session` | Join an existing session | `session_id` |
-| `ztab_accept_policy` | Accept the session policy | `session_id`, `participant_token` |
-| `ztab_submit_input` | Submit your private data | `session_id`, `participant_token`, `input_json` |
-| `ztab_get_session_status` | Check session state and participant counts | `session_id`, `participant_token` |
-| `ztab_get_result` | Get the final result (when CLOSED), or session state (if not yet) | `session_id`, `participant_token` |
+| `ztab_join_session` | Join an existing session | `invitation_token` |
+| `ztab_accept_policy` | Accept the session policy | `participant_token` |
+| `ztab_submit_input` | Submit your private data | `participant_token`, `input_json` |
+| `ztab_get_session_status` | Check session state and participant counts | `participant_token` |
+| `ztab_get_result` | Get the final result (when CLOSED), or session state (if not yet) | `participant_token` |
 
 All tools accept an optional `backend` parameter. Omit it to use the default.
 
@@ -190,7 +215,7 @@ All tools accept an optional `backend` parameter. Omit it to use the default.
 When waiting for a state change (participants joining, inputs arriving,
 or calculation completing):
 
-1. Call `schedule(DurationSeconds="30", Prompt="Poll ZTAB session <session_id>")`.
+1. Call `schedule(DurationSeconds="30", Prompt="Poll ZTAB session")`.
 2. **STOP. Do not call any other tools this turn.** Yield control immediately.
 3. When the timer wakes you, resume from the polling step.
 
@@ -215,29 +240,29 @@ these steps in order.
 > for the same task.** Search your conversation history for a prior
 > `ztab_create_session` call. If you find one, and it's for the same task,
 > extract the
-> `session_id` and `participant_token` from that response, and go to
-> CREATOR Step 2 (share the session id).
+> `invitation_token` and `participant_token` from that response, and go to
+> CREATOR Step 2 (share the invitation token).
 
 Otherwise, call `ztab_create_session`:
 - `policy_class`: The policy to use (e.g., `"ScheduleOverlap"`)
 - `expected_participants`: Total count including yourself (≥ 2)
 
 Save from the response:
-- `session_id` — share this with other participants
+- `invitation_token` — share this with other participants
 - `participant_token` — keep this secret, use in all subsequent calls
 
-After that, proceed to CREATOR Step 2 (share the session id).
+After that, proceed to CREATOR Step 2 (share the invitation token).
 
-#### CREATOR Step 2: Share the session ID
+#### CREATOR Step 2: Share the invitation token
 
 NOTE: You only need to do this once. If you already executed this step,
 go to CREATOR Step 3 (wait for others).
 
-Otherwise, tell the user the `session_id` so they can share it with
+Otherwise, tell the user the `invitation_token` so they can share it with
 the other participants. Example response:
 
-> "I created ZTAB session `<session_id>`. Please share this ID with
-> the other participant so their agent can join."
+> "I created a ZTAB session. Please share this invitation token with
+> the other participant so their agent can join: `<invitation_token>`"
 
 After that, proceed to CREATOR Step 3 (wait for others).
 
@@ -248,15 +273,14 @@ going until the state is no longer `OPEN` as described below.
 You are waiting for everyone to learn about the session, join, and
 accept the policy. This can take time.
 
-Call `ztab_get_session_status` with your `session_id` and
-`participant_token`.
+Call `ztab_get_session_status` with your `participant_token`.
 
 Read the `state` field in the response:
 
 - **If `OPEN`:** Not all participants have joined and accepted yet.
-  → Set a 30-second timer and yield. **When woken, come back to
-  this step and poll again. Do NOT stop after one or two polls —
-  keep looping indefinitely until the state changes.**
+  → Poll, then set a 30-second timer and yield (see "How to
+  Poll and Yield" above). Be patient — this may take several
+  minutes.
 
 - **If `SEALED`:** All participants joined and accepted.
   → Go to CREATOR Step 4 (submit your input).
@@ -278,8 +302,7 @@ Read the `state` field in the response:
 > Do not resubmit your input if you already submitted.**
 
 Call `ztab_submit_input`:
-- `session_id`: your session ID
-- `participant_token`: your token
+- `participant_token`: your participant token
 - `input_json`: a JSON string containing your private data
 
 Verify the response confirms success.
@@ -294,16 +317,16 @@ going until you obtain the result, or the state is no longer
 everyone to submit their input and for the system to calculate
 the result. This can take time.
 
-Call `ztab_get_result` with your `session_id` and `participant_token`.
+Call `ztab_get_result` with your `participant_token`.
 
 Read the `state` field in the response:
 
 - **If `SEALED`, or `CALCULATING`:**  Not done yet. Either not all
   participants have submitted their input (`SEALED`), or the system
   has not yet computed the result (`CALCULATING`).
-  → Set a 30-second timer and yield. **When woken, come back to
-  this step and poll again. Do NOT stop after one or two polls —
-  keep looping indefinitely until the state changes.**
+  → Poll, then set a 30-second timer and yield (see "How to
+  Poll and Yield" above). Be patient — this may take several
+  minutes.
 
 - **If `OPEN`:** You are in this step by mistake. The session has not
   yet progressed to the `SEALED` state. Not everyone joined and accepted,
@@ -324,14 +347,14 @@ to the user. **Done.**
 
 ### JOINER Procedure
 
-You are the JOINER if someone gave you a `session_id` to join.
+You are the JOINER if someone gave you an `invitation_token` to join.
 Follow these steps in order.
 
 #### JOINER Step 1: Join the session
 
-You must have a `session_id`. If you do not, ask the user for it.
+You must have an `invitation_token`. If you do not, ask the user for it.
 
-Call `ztab_join_session` with the `session_id`.
+Call `ztab_join_session` with the `invitation_token`.
 
 Save from the response:
 - `participant_token` — keep this secret, use in all subsequent calls
@@ -343,7 +366,7 @@ After that, proceed to JOINER Step 2 (accept the policy).
 
 Review the policy returned in Step 1. If it is acceptable:
 
-Call `ztab_accept_policy` with your `session_id` and `participant_token`.
+Call `ztab_accept_policy` with your `participant_token`.
 
 After that, proceed to JOINER Step 3 (wait for others).
 
@@ -354,15 +377,14 @@ going until the state is no longer `OPEN` as described below.
 You are waiting for all participants to join and accept the
 policy. This can take time.
 
-Call `ztab_get_session_status` with your `session_id` and
-`participant_token`.
+Call `ztab_get_session_status` with your `participant_token`.
 
 Read the `state` field in the response:
 
 - **If `OPEN`:** Not all participants have joined and accepted yet.
-  → Set a 30-second timer and yield. **When woken, come back to
-  this step and poll again. Do NOT stop after one or two polls —
-  keep looping indefinitely until the state changes.**
+  → Poll, then set a 30-second timer and yield (see "How to
+  Poll and Yield" above). Be patient — this may take several
+  minutes.
 
 - **If `SEALED`:** All participants joined and accepted.
   → Go to JOINER Step 4 (submit your input).
@@ -390,8 +412,7 @@ Read the `state` field in the response:
 > Do not resubmit your input if you already submitted.**
 
 Call `ztab_submit_input`:
-- `session_id`: your session ID
-- `participant_token`: your token
+- `participant_token`: your participant token
 - `input_json`: a JSON string containing your private data
 
 Verify the response confirms success.
@@ -406,16 +427,16 @@ going until you obtain the result, or the state is no longer
 everyone to submit their input and for the system to calculate
 the result. This can take time.
 
-Call `ztab_get_result` with your `session_id` and `participant_token`.
+Call `ztab_get_result` with your `participant_token`.
 
 Read the `state` field in the response:
 
 - **If `SEALED`, or `CALCULATING`:** Not done yet. Either not all
   participants have submitted their input (`SEALED`), or the system
   has not yet computed the result (`CALCULATING`).
-  → Set a 30-second timer and yield. **When woken, come back to
-  this step and poll again. Do NOT stop after one or two polls —
-  keep looping indefinitely until the state changes.**
+  → Poll, then set a 30-second timer and yield (see "How to
+  Poll and Yield" above). Be patient — this may take several
+  minutes.
 
 - **If `OPEN`:** You are in this step by mistake. The session has not
   yet progressed to the `SEALED` state. Not everyone joined and accepted,
@@ -443,7 +464,7 @@ history.
 
 > **RULE: Never create a duplicate session.** Before calling
 > `ztab_create_session`, check your conversation history. If you
-> already have a `session_id` for the same task (e.g., scheduling
+> already have an `invitation_token` for the same task (e.g., scheduling
 > the same meeting), resume that session — do not create a new
 > one because other participants may already be working with you
 > in the existing session, and you want to avoid the split brain
@@ -465,20 +486,20 @@ Search your conversation history and proceed as follows:
    coordinating a task across a group of agents, or a joiner asked to
    participate in a task created by another agent.
 
-**Q2-CREATOR: Have you created a `session_id` for this task?**
+**Q2-CREATOR: Have you created an `invitation_token` for this task?**
 
 Search the conversation history for the `ztab_create_session` call associated
-with this task. If you find it, the `session_id` will be in the result.
+with this task. If you find it, the `invitation_token` will be in the result.
 Go to Q3-CREATOR. Do not create a duplicate session for the same task.
 
 Otherwise, if you cannot find `ztab_create_session` in your history, it means
 you have not started yet. → go to **CREATOR Step 1** (create the session).
 
-**Q2-JOINER: Have you received a `session_id` for this task?**
+**Q2-JOINER: Have you received an `invitation_token` for this task?**
 
-If you are a Joiner, you should have been given a `session_id`. Find it in the
+If you are a Joiner, you should have been given an `invitation_token`. Find it in the
 conversation history. You may have already called `ztab_join_session`. If so,
-you can extract `session_id` from that call. If you find it, go to Q3-JOINER.
+you can extract `participant_token` from that call. If you find it, go to Q3-JOINER.
 
 Otherwise, if you cannot find it, ask the user for it. Once you receive it, go
 to Q3-JOINER.
@@ -489,9 +510,9 @@ to Q3-JOINER.
   You cannot submit input more than once per session.
 - **No** → Continue to Q4-CREATOR.
 
-**Q4-CREATOR: Have you shared the `session_id` with the user?**
+**Q4-CREATOR: Have you shared the `invitation_token` with the user?**
 
-- **No** → go to **CREATOR Step 2** (share session ID).
+- **No** → go to **CREATOR Step 2** (share invitation token).
 - **Yes** → go to **CREATOR Step 3** (wait for others).
   The status response will tell you whether to wait (OPEN),
   submit (SEALED), handle failure (ABORTED), etc.
@@ -532,3 +553,9 @@ to Q3-JOINER.
    Both CREATOR and JOINER must submit.
 7. **Creating a new session** when a session is underway for the same task.
    Will create a split brain that causes both sessions to fail.
+8. **`PERMISSION_DENIED` on `ztab_create_session`** — the TEE server
+   requires a `creator_token` but your `backends.json` does not have
+   one configured for this backend. Fix: re-run
+   `install_mcp.sh --creator-token TOKEN` or manually add
+   `"creator_token": "TOKEN"` to the backend entry in
+   `~/.ztab/backends.json`.

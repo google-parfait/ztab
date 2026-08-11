@@ -38,16 +38,16 @@ namespace {
 constexpr int kBatchSize = 2048;
 
 // Chat template markers for instruction-tuned Gemma models.
-// TODO: Consider extracting these to configuration or taking them via the session_manager API 
-// to support other models (Llama 3, Mistral) in the future.
-// Design Decision: We are intentionally focused strictly on the Gemma model family
-// for this milestone to avoid scope creep.
+// TODO: Consider extracting these to configuration or taking them via the
+// session_manager API to support other models (Llama 3, Mistral) in the future.
+// Design Decision: We are intentionally focused strictly on the Gemma model
+// family for this milestone to avoid scope creep.
 constexpr char kStartOfTurn[] = "<start_of_turn>";
 constexpr char kEndOfTurn[] = "<end_of_turn>";
 
 // Forward llama.cpp logs to Abseil.
 static void LlamaLogger(ggml_log_level level, const char* text,
-                         void* user_data) {
+                        void* user_data) {
   std::string msg(text);
   if (!msg.empty() && msg.back() == '\n') {
     msg.pop_back();
@@ -122,33 +122,35 @@ class LlamaEngineImpl : public LlamaEngine {
   }
 
   absl::StatusOr<std::string> Generate(const std::string& prompt,
-                                        int max_tokens) override {
+                                       int max_tokens) override {
     std::lock_guard<std::mutex> lock(generate_mu_);
     if (!ctx_) {
       return absl::InternalError("Llama context not initialized.");
     }
 
     // Apply chat template.
-    std::string formatted = absl::StrCat(
-        kStartOfTurn, "user\n", prompt, kEndOfTurn, "\n",
-        kStartOfTurn, "model\n");
+    std::string formatted =
+        absl::StrCat(kStartOfTurn, "user\n", prompt, kEndOfTurn, "\n",
+                     kStartOfTurn, "model\n");
 
     // Tokenize.
     std::vector<llama_token> tokens(n_ctx_);
     int n_tokens = llama_tokenize(vocab_, formatted.c_str(), formatted.size(),
                                   tokens.data(), tokens.size(), true, true);
     if (n_tokens < 0) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("Prompt exceeds context length (Tokenization failed, n_tokens=", n_tokens, ")"));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Prompt exceeds context length (Tokenization failed, n_tokens=",
+          n_tokens, ")"));
     }
     tokens.resize(n_tokens);
 
     LOG(INFO) << "Prompt tokenized to " << n_tokens << " tokens.";
 
     // Clear KV cache and sampler state for the new prompt (reuse the context).
-    // Note: Static analysis tools may complain that this should be `llama_kv_cache_clear`.
-    // This is intentional. We are pinned to llama.cpp commit 98d2d288 where the API
-    // is named `llama_memory_clear`. Do not change this unless bumping the pin.
+    // Note: Static analysis tools may complain that this should be
+    // `llama_kv_cache_clear`. This is intentional. We are pinned to llama.cpp
+    // commit 98d2d288 where the API is named `llama_memory_clear`. Do not
+    // change this unless bumping the pin.
     llama_memory_clear(llama_get_memory(ctx_), /* data= */ true);
     llama_sampler_reset(sampler_);
 
@@ -178,8 +180,8 @@ class LlamaEngineImpl : public LlamaEngine {
 
       // Convert token to text.
       char buf[256];
-      int n = llama_token_to_piece(vocab_, new_token, buf, sizeof(buf), 0,
-                                   true);
+      int n =
+          llama_token_to_piece(vocab_, new_token, buf, sizeof(buf), 0, true);
       if (n > 0) {
         output.append(buf, n);
       }
@@ -207,8 +209,7 @@ class LlamaEngineImpl : public LlamaEngine {
     }
 
     // Trim trailing whitespace.
-    while (!output.empty() &&
-           (output.back() == '\n' || output.back() == ' ')) {
+    while (!output.empty() && (output.back() == '\n' || output.back() == ' ')) {
       output.pop_back();
     }
 

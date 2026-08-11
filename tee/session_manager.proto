@@ -87,19 +87,26 @@ message SessionPolicy {
 
 message CreateSessionRequest {
   SessionPolicy policy = 1;
+  // Optional nonce for idempotent retry (prevents creating duplicate
+  // sessions on network failure). Must be UUIDv4 if provided.
+  string client_nonce = 2;
 }
 
 message CreateSessionResponse {
-  string session_id = 1;
+  // Invitation token to share with other participants for joining.
+  string invitation_token = 1;
   SessionState state = 2;
   // Creator's participant token for subsequent RPCs.
   string participant_token = 3;
 }
 
 message JoinSessionRequest {
-  string session_id = 1;
+  // The invitation token shared by the session creator.
+  string invitation_token = 1;
   // Optional role for role-based policy classes (Phase 2+).
   string role = 2;
+  // Optional nonce for idempotent retry (prevents burning a slot on network failure).
+  string client_nonce = 3;
 }
 
 message JoinSessionResponse {
@@ -110,7 +117,9 @@ message JoinSessionResponse {
 }
 
 message AcceptPolicyRequest {
-  string session_id = 1;
+  reserved 1;
+  reserved "session_id";
+  // participant_token implies the session — no session_id needed.
   string participant_token = 2;
 }
 
@@ -119,7 +128,9 @@ message AcceptPolicyResponse {
 }
 
 message SubmitInputRequest {
-  string session_id = 1;
+  reserved 1;
+  reserved "session_id";
+  // participant_token implies the session — no session_id needed.
   string participant_token = 2;
   string input_json = 3;
 }
@@ -130,7 +141,9 @@ message SubmitInputResponse {
 }
 
 message GetResultRequest {
-  string session_id = 1;
+  reserved 1;
+  reserved "session_id";
+  // participant_token implies the session — no session_id needed.
   string participant_token = 2;
 }
 
@@ -144,7 +157,9 @@ message GetResultResponse {
 }
 
 message GetSessionStatusRequest {
-  string session_id = 1;
+  reserved 1;
+  reserved "session_id";
+  // participant_token implies the session — no session_id needed.
   string participant_token = 2;
 }
 

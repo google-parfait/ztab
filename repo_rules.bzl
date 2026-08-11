@@ -32,6 +32,7 @@ def _gcs_file_impl(ctx):
         stripped = gcs_url
         if stripped.startswith("gs://"):
             stripped = stripped[len("gs://"):]
+
         # Split on first "/" to separate bucket from path.
         parts = stripped.split("/", 1)
         object_path = parts[1] if len(parts) > 1 else parts[0]

@@ -1,9 +1,9 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_proto//proto:defs.bzl", "proto_library")
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -16,7 +16,6 @@ config_setting(
     name = "cuda_enabled",
     flag_values = {":enable_cuda": "True"},
 )
-
 
 # Proto compilation
 proto_library(
@@ -86,10 +85,10 @@ cc_library(
     srcs = ["http_client.cc"],
     hdrs = ["http_client.h"],
     deps = [
-        "@curl",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@curl",
     ],
 )
 
@@ -114,13 +113,13 @@ cc_library(
     srcs = ["llama_engine.cc"],
     hdrs = ["llama_engine.h"],
     deps = [
-        "@llama_cpp//:llama_cpp",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
+        "@llama_cpp",
     ],
 )
 
@@ -147,12 +146,12 @@ cc_library(
     srcs = ["policy_registry.cc"],
     hdrs = ["policy_registry.h"],
     deps = [
-        "@nlohmann_json//:json",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@nlohmann_json//:json",
     ],
 )
 
@@ -164,17 +163,19 @@ cc_library(
     deps = [
         ":llama_engine",
         ":policy_registry",
-        ":session_manager_cc_proto",
         ":session_manager_cc_grpc",
+        ":session_manager_cc_proto",
         "@boringssl//:crypto",
-        "@nlohmann_json//:json",
-        "@re2//:re2",
+        "@com_github_grpc_grpc//:grpc++",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+        "@nlohmann_json//:json",
+        "@re2",
     ],
 )
 
@@ -201,6 +202,22 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+    ],
+)
+
+# Session Manager Unit Tests (Level 1A)
+cc_test(
+    name = "session_manager_test",
+    srcs = ["session_manager_test.cc"],
+    deps = [
+        ":policy_registry",
+        ":session_manager",
+        ":session_manager_cc_grpc",
+        ":session_manager_cc_proto",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

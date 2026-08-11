@@ -55,7 +55,8 @@ absl::StatusOr<std::string> PostJsonViaUnixSocket(
   if (!headers) {
     return absl::InternalError("Failed to append Content-Type header.");
   }
-  struct curl_slist* tmp = curl_slist_append(headers, "Metadata-Flavor: Google");
+  struct curl_slist* tmp =
+      curl_slist_append(headers, "Metadata-Flavor: Google");
   if (!tmp) {
     curl_slist_free_all(headers);
     return absl::InternalError("Failed to append Metadata-Flavor header.");

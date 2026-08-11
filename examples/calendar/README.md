@@ -18,7 +18,8 @@ time slots between multiple participants' schedules.
 Point the TEE server at this directory:
 
 ```bash
-./ztab_server --policy_dir=examples/calendar/ --model_path=...
+./ztab_server --policy_dir=examples/calendar/ --model_path=... \
+    --creator_token=SECRET   # optional admission control
 ```
 
 ### As test data
@@ -33,6 +34,12 @@ python3 -m test.test_prompt \
 python3 -m test.test_session \
     --scenario examples.calendar.scenario:CalendarScenario \
     --host localhost --port 8000 --verifier noop
+
+# With admission control testing:
+python3 -m test.test_session \
+    --scenario examples.calendar.scenario:CalendarScenario \
+    --host localhost --port 8000 --verifier noop \
+    --test_admission --creator_token SECRET
 ```
 
 ## Building Your Own Scenario

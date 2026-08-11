@@ -44,10 +44,10 @@ class GcpAttestationTokenProvider : public AttestationTokenProvider {
     // Build the JSON payload for the ITA token request.
     // The nonce is the Base64URL-encoded SHA-256 hash of the server's
     // ephemeral public key, binding the attestation to the TLS credential.
-    std::string json_payload = absl::StrCat(
-        "{\"audience\": \"", kAudience,
-        "\", \"token_type\": \"PRINCIPAL_TAGS\", \"nonces\": [\"", nonce,
-        "\"]}");
+    std::string json_payload =
+        absl::StrCat("{\"audience\": \"", kAudience,
+                     "\", \"token_type\": \"PRINCIPAL_TAGS\", \"nonces\": [\"",
+                     nonce, "\"]}");
 
     LOG(INFO) << "Requesting ITA attestation token from Confidential Space "
                  "agent at "
@@ -63,16 +63,15 @@ class GcpAttestationTokenProvider : public AttestationTokenProvider {
                        response.status().message()));
     }
 
-    LOG(INFO) << "Received ITA attestation token ("
-              << response->length() << " bytes).";
+    LOG(INFO) << "Received ITA attestation token (" << response->length()
+              << " bytes).";
     return *response;
   }
 };
 
 }  // namespace
 
-std::unique_ptr<AttestationTokenProvider>
-CreateGcpAttestationTokenProvider() {
+std::unique_ptr<AttestationTokenProvider> CreateGcpAttestationTokenProvider() {
   return std::make_unique<GcpAttestationTokenProvider>();
 }
 

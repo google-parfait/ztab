@@ -30,6 +30,9 @@ oci_image(
     ],
     entrypoint = ["/ztab_server"],
     exposed_ports = ["8000/tcp"],
+    labels = {
+        "tee.launch_policy.allow_env_override": "CREATOR_TOKEN",
+    },
     tars = [
         "//tee:ztab_server_tar",
         ":policy_layer",

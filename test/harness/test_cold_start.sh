@@ -791,7 +791,7 @@ trigger_agents() {
     creator_trigger_flag="--creator_token $CREATOR_TOKEN"
   fi
 
-  TRIGGER_OUT=$(python3 "$SCRIPT_DIR/trigger_session_test.py" \
+  python3 "$SCRIPT_DIR/trigger_session_test.py" \
     --ports "$ports_csv" \
     --csrf_token "$STATIC_TOKEN" \
     --workspace "$WORKSPACE_DIR" \
@@ -806,12 +806,11 @@ trigger_agents() {
     $verifier_flags \
     $phase_flag \
     $creator_trigger_flag \
-    2>&1) || true
-  echo "$TRIGGER_OUT" > "$RUN_DIR/trigger.log"
-  # Extract conversation IDs from trigger output (JSON on last line)
+    2>&1 | tee "$RUN_DIR/trigger.log" || true
+  # Extract conversation IDs from saved trigger log (JSON on last line).
   # Phase 2 uses NEW cascades (StartCascade), so we extract both sets of IDs.
   # The monitor should track Phase 2 IDs (active cascades) when available.
-  AGENT_IDS=$(echo "$TRIGGER_OUT" | python3 -c "
+  AGENT_IDS=$(python3 -c "
 import sys, json
 for line in reversed(sys.stdin.readlines()):
     line = line.strip()
@@ -820,8 +819,8 @@ for line in reversed(sys.stdin.readlines()):
         ids = d.get('agent_conversation_ids', [])
         print(','.join(ids))
         break
-" 2>/dev/null || true)
-  PHASE2_IDS=$(echo "$TRIGGER_OUT" | python3 -c "
+" < "$RUN_DIR/trigger.log" 2>/dev/null || true)
+  PHASE2_IDS=$(python3 -c "
 import sys, json
 for line in reversed(sys.stdin.readlines()):
     line = line.strip()
@@ -831,7 +830,7 @@ for line in reversed(sys.stdin.readlines()):
         if ids:
             print(','.join(ids))
         break
-" 2>/dev/null || true)
+" < "$RUN_DIR/trigger.log" 2>/dev/null || true)
   if [[ -z "$AGENT_IDS" ]]; then return 1; fi
   log "  Phase 1 IDs: $AGENT_IDS"
   if [[ -n "$PHASE2_IDS" ]]; then

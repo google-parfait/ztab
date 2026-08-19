@@ -67,6 +67,9 @@ def ztab_model_targets(model_name, weights_label, weights_filename):
             entrypoint = ["/ztab_server"],
             env = variant["env"],
             exposed_ports = ["8000/tcp"],
+            labels = {
+                "tee.launch_policy.allow_env_override": "CREATOR_TOKEN",
+            },
             tars = [
                 "//tee:ztab_server_tar",
                 ":" + model_layer_name,

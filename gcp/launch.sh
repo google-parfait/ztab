@@ -46,6 +46,7 @@ INSTANCE_NAME="ztab-server-h100"
 TEMPLATE_NAME="ztab-server-h100-template"
 GROUP_NAME="ztab-server-h100-mig"
 CREATOR_TOKEN=""
+IMAGE_DIGEST=""  # sha256:... — overrides --image_tag
 DEBUG="true"
 
 usage() {
@@ -67,6 +68,8 @@ Optional flags:
   --model MODEL         Model name (default: gemma4_e4b).
   --latest              Use the :MODEL_latest tag instead of :MODEL_staging.
   --image_tag TAG       Override image tag explicitly.
+  --image_digest DIGEST Use exact digest (sha256:...).
+                        Overrides --image_tag.
   --instance_name NAME  Override instance name (default: ztab-server-h100).
   --template_name NAME  Override template name (default: ztab-server-h100-template).
   --group_name NAME     Override MIG group name (default: ztab-server-h100-mig).
@@ -92,6 +95,8 @@ while [[ $# -gt 0 ]]; do
     --latest)         IMAGE_TAG="latest"; shift ;;
     --image_tag)      IMAGE_TAG="$2"; shift 2 ;;
     --image_tag=*)    IMAGE_TAG="${1#*=}"; shift ;;
+    --image_digest)   IMAGE_DIGEST="$2"; shift 2 ;;
+    --image_digest=*) IMAGE_DIGEST="${1#*=}"; shift ;;
     --instance_name)  INSTANCE_NAME="$2"; shift 2 ;;
     --instance_name=*) INSTANCE_NAME="${1#*=}"; shift ;;
     --template_name)  TEMPLATE_NAME="$2"; shift 2 ;;
@@ -121,14 +126,17 @@ if [[ -z "${ZONE}" ]]; then
   usage
 fi
 
-# Derive image tag: explicit override > --latest > default (MODEL_staging).
-if [[ -z "${IMAGE_TAG}" ]]; then
+# Derive image reference: digest > explicit tag > --latest > default.
+if [[ -n "${IMAGE_DIGEST}" && -n "${IMAGE_BASE}" ]]; then
+  # Direct digest: bypass tag entirely.
+  IMAGE="${IMAGE_BASE}@${IMAGE_DIGEST}"
+elif [[ -z "${IMAGE_TAG}" ]]; then
   IMAGE_TAG="${MODEL}_staging"
 elif [[ "${IMAGE_TAG}" == "latest" ]]; then
   IMAGE_TAG="${MODEL}_latest"
 fi
 
-if [[ -n "${IMAGE_BASE}" ]]; then
+if [[ -z "${IMAGE:-}" && -n "${IMAGE_BASE}" ]]; then
   IMAGE="${IMAGE_BASE}:${IMAGE_TAG}"
 fi
 

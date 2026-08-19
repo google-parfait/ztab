@@ -40,7 +40,7 @@ VENV_PATH=""
 BACKEND_ID=""
 BACKEND_HOST=""
 BACKEND_PORT=""
-BACKEND_VERIFIER="noop"
+BACKEND_VERIFIER=""
 BACKEND_DIGEST=""
 BACKEND_ALLOW_DEBUG="true"
 BACKEND_SET_DEFAULT="false"
@@ -145,6 +145,11 @@ if [ -n "$BACKEND_ID" ]; then
   # --add-backend was specified: configure that backend.
   if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
     echo "Error: --add-backend requires ID HOST PORT arguments." >&2
+    exit 1
+  fi
+  if [ -z "$BACKEND_VERIFIER" ]; then
+    echo "Error: --verifier is required with --add-backend." >&2
+    echo "  Use --verifier noop (local dev) or --verifier ita (production)." >&2
     exit 1
   fi
 

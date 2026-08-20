@@ -83,11 +83,13 @@ verifiable coordination infrastructure.
    pluggable attestation provider interface. GCP Confidential Space
    (Intel TDX + H100 GPU) is the reference deployment target.
 
-6. **Incremental adoption**: The system supports a mock attestation
-   mode **strictly for local development and testing**. This mode
-   provides no security guarantees and must never be used for
-   production deployments. Production deployments require real TEE
-   hardware (Confidential Computing VMs) with genuine attestation.
+6. **Incremental adoption**: Production deployments use real TEE
+   hardware with genuine attestation (`--verifier ita`), where
+   connections are verified against Intel Trust Authority on TDX.
+   For local development and testing without TEE hardware, a mock
+   attestation mode (`--verifier noop`) is available but provides
+   **no security guarantees** and must never be used for production
+   deployments or for processing real sensitive data.
 
 7. **Policy-as-code**: Processing templates (prompts, schemas) are
    part of the container image. Changing a policy changes the

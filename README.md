@@ -116,3 +116,55 @@ python3 cli.py --host localhost --port 8000 \
 # Automated MCP protocol smoke test:
 python3 smoke_test.py --host localhost --port 8000
 ```
+
+## Security Considerations
+
+### Attestation Modes
+
+ZTAB supports two attestation modes, controlled by the `--verifier`
+flag:
+
+| Mode | Flag | Purpose | Security |
+| :--- | :--- | :--- | :--- |
+| **Production** | `--verifier ita` | Real deployments on Confidential Computing VMs (e.g., GCP with Intel TDX + H100). | Full hardware root of trust verified by Intel Trust Authority. Connections are established over RA-TLS with attestation reports cryptographically bound to the server's ephemeral key. |
+| **Local development** | `--verifier noop` | Local testing without TEE hardware. | ⚠️ **No security guarantees.** The server generates unsigned mock attestation tokens. This mode must never be used for production or for processing real sensitive data. |
+
+The `--verifier` flag is **required** when configuring a backend
+via `install_mcp.sh --add-backend`, ensuring deployments always
+make an explicit attestation choice.
+
+### Semantic Leakage
+
+Semantic leakage — where the encapsulated LLM paraphrases or
+summarizes a participant's private input rather than reproducing
+it verbatim — is a **fundamental limitation** of any LLM-based
+multi-party system. No substring scanner or output filter can
+fully prevent this.
+
+ZTAB mitigates semantic leakage through structural restrictions:
+
+- **Constrained output schemas:** Policies restrict LLM outputs to
+  low-semantic-content types (datetime arrays, numeric values,
+  boolean flags) that cannot encode arbitrary natural language.
+- **JSON Schema validation:** Both inputs and outputs are validated
+  against strict schemas with regex patterns, limiting the LLM's
+  output space.
+- **Policy-as-code:** Processing templates are baked into the
+  container image. Changing a policy changes the attestation digest,
+  so clients can cryptographically verify exactly what processing
+  logic is running.
+
+Policy authors should be aware of this limitation and design output
+schemas that structurally minimize the information the LLM can
+encode in its response. See the
+[design document](docs/design.md) (§3.5) for a detailed analysis.
+
+### Admission Control
+
+When a creator token is configured (`--creator_token`), only
+clients presenting a valid token can create new sessions. This
+prevents unauthorized use of TEE compute resources and is enforced
+at the gRPC layer before any session state is allocated. See
+[docs/design.md](docs/design.md) for details on the admission
+control protocol.
+

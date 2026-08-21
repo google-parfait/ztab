@@ -530,7 +530,22 @@ def monitor_agents(
         tee_channel, tee_stub = _connect_to_tee(tee_host, tee_port, verifier)
 
       if tee_stub is not None:
-        tee_state = _poll_tee_status(tee_stub, creator_token)
+        try:
+          tee_state = _poll_tee_status(tee_stub, creator_token)
+        except grpc.RpcError as e:
+          if e.code() == grpc.StatusCode.UNAVAILABLE:
+            print(
+                "  [Monitor] TEE cert rotated, reconnecting...",
+                file=sys.stderr,
+            )
+            if tee_channel:
+              tee_channel.close()
+            tee_channel, tee_stub = _connect_to_tee(
+                tee_host, tee_port, verifier)
+            tee_state = _poll_tee_status(
+                tee_stub, creator_token)
+          else:
+            raise
 
     # Stall detection and creator nudging (Point 4)
     if creator_label and not nudged_creator and invitation_token is not None:

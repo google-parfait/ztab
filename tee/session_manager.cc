@@ -78,25 +78,17 @@ constexpr int kParticipantTokenBytes = 32;  // 64 hex chars
 constexpr int kDefaultTimeoutSeconds = 300;
 constexpr int kMaxLlmRetries = 3;
 
-// F7: Session garbage collection.
-constexpr int kMaxSessions = 1000;
-constexpr int kTerminalRetentionSeconds = 3600;  // 1 hour
-
 // F8: Upper bounds on session parameters.
 constexpr int kMaxParticipants = 100;
 constexpr int kMaxTimeoutSeconds = 86400;  // 24 hours
 constexpr int kMaxInputBytes = 65536;      // 64 KB
 
-// Finding 2: Security limit for nested JSON parsing to prevent stack overflow
-// DoS.
+// Finding 2: Security limit for nested JSON parsing to
+// prevent stack overflow DoS.
 constexpr int kMaxJsonParseDepth = 32;
 
-// Finding 3: Limit the time a session can sit in the SEALED state waiting
-// for inputs, preventing long-timeout sessions from locking up slots.
+// Finding 3: Limit SEALED state waiting time.
 constexpr int kMaxSealedSeconds = 600;  // 10 minutes
-
-// Finding 5: Explicitly cap CALCULATING to 30 mins, bypassing overall timeout.
-constexpr int kMaxCalculatingSeconds = 1800;  // 30 minutes
 
 // Prevent unauthenticated resource exhaustion DoS.
 constexpr int kMaxOpenSeconds = 600;  // 10 minutes
@@ -278,7 +270,12 @@ absl::Status ValidateNode(const nlohmann::json& value,
 
 SessionManager::SessionManager(LlamaEngine* engine,
                                const PolicyRegistry* registry)
-    : engine_(engine), registry_(registry) {}
+    : SessionManager(engine, registry, Options{}) {}
+
+SessionManager::SessionManager(LlamaEngine* engine,
+                               const PolicyRegistry* registry,
+                               const Options& options)
+    : engine_(engine), registry_(registry), options_(options) {}
 
 SessionManager::~SessionManager() {
   // F13: Wait for all in-flight background threads to finish before
@@ -334,7 +331,7 @@ bool SessionManager::CheckAndEnforceTimeout(Session& session) {
     // permanently locking session slots.
     // Finding 5: Explicitly cap CALCULATING to 30 mins, bypassing overall
     // timeout.
-    effective_timeout = absl::Seconds(kMaxCalculatingSeconds);
+    effective_timeout = absl::Seconds(options_.max_calculating_seconds);
   }
 
   if (elapsed > effective_timeout) {
@@ -441,7 +438,7 @@ void SessionManager::SweepTerminalSessions() {
         // exhaustion DoS.
         should_erase = true;
       } else if ((now - s.state_entered_at) >
-                 absl::Seconds(kTerminalRetentionSeconds)) {
+                 absl::Seconds(options_.terminal_retention_seconds)) {
         should_erase = true;
       }
     }
@@ -471,9 +468,10 @@ absl::StatusOr<CreateSessionResponse> SessionManager::CreateSession(
   SweepTerminalSessions();
 
   // F7: Hard cap on total active sessions.
-  if (static_cast<int>(sessions_.size()) >= kMaxSessions) {
-    return absl::ResourceExhaustedError(absl::StrCat(
-        "Server at session capacity (", kMaxSessions, "). Try again later."));
+  if (static_cast<int>(sessions_.size()) >= options_.max_sessions) {
+    return absl::ResourceExhaustedError(
+        absl::StrCat("Server at session capacity (", options_.max_sessions,
+                     "). Try again later."));
   }
 
   const auto& policy = request.policy();
@@ -758,8 +756,8 @@ absl::StatusOr<SubmitInputResponse> SessionManager::SubmitInput(
       // Idempotent: if already in CALCULATING/CLOSED/ABORTED, return state.
       if (participant->input_submitted) {
         // Validate retry payload against stored canonical form.
-        auto retry_status = ValidateRetryPayload(
-            request.input_json(), participant->input_json);
+        auto retry_status =
+            ValidateRetryPayload(request.input_json(), participant->input_json);
         if (!retry_status.ok()) return retry_status;
         SubmitInputResponse response;
         response.set_state(session->state);
@@ -773,8 +771,8 @@ absl::StatusOr<SubmitInputResponse> SessionManager::SubmitInput(
 
     if (participant->input_submitted) {
       // Idempotent: already submitted in SEALED state. Verify content.
-      auto retry_status = ValidateRetryPayload(
-          request.input_json(), participant->input_json);
+      auto retry_status =
+          ValidateRetryPayload(request.input_json(), participant->input_json);
       if (!retry_status.ok()) return retry_status;
       int submitted = 0;
       for (const auto& [_, p] : session->participants) {

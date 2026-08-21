@@ -64,6 +64,9 @@ cc_library(
 cc_library(
     name = "encoding_utils",
     hdrs = ["encoding_utils.h"],
+    deps = [
+        "@com_google_absl//absl/strings",
+    ],
 )
 
 # Mock Attestation Token Provider (local development)
@@ -210,6 +213,7 @@ cc_test(
     name = "session_manager_test",
     srcs = ["session_manager_test.cc"],
     deps = [
+        ":llama_engine",
         ":policy_registry",
         ":session_manager",
         ":session_manager_cc_grpc",
@@ -221,7 +225,68 @@ cc_test(
     ],
 )
 
-# --- Binary Packaging (used by //gcp:BUILD for OCI image assembly) ---
+# TLS Certificate Generator Unit Tests
+cc_test(
+    name = "tls_cert_generator_test",
+    srcs = ["tls_cert_generator_test.cc"],
+    deps = [
+        ":tls_cert_generator",
+        "@boringssl//:crypto",
+        "@boringssl//:ssl",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Encoding Utils Unit Tests
+cc_test(
+    name = "encoding_utils_test",
+    srcs = ["encoding_utils_test.cc"],
+    deps = [
+        ":encoding_utils",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Policy Registry Unit Tests
+cc_test(
+    name = "policy_registry_test",
+    srcs = ["policy_registry_test.cc"],
+    deps = [
+        ":policy_registry",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Mock Attestation Token Provider Unit Tests
+cc_test(
+    name = "mock_attestation_token_provider_test",
+    srcs = ["mock_attestation_token_provider_test.cc"],
+    deps = [
+        ":encoding_utils",
+        ":mock_attestation_token_provider",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Schema Validation Unit Tests
+cc_test(
+    name = "schema_validation_test",
+    srcs = ["schema_validation_test.cc"],
+    deps = [
+        ":policy_registry",
+        ":session_manager",
+        ":session_manager_cc_grpc",
+        ":session_manager_cc_proto",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
 
 # Binary layer: packages ztab_server into a tar for OCI image layering.
 pkg_tar(

@@ -46,11 +46,24 @@ namespace ztab {
 // timeouts since LLM inference has its own retry/failure semantics.
 class SessionManager {
  public:
-  // Does not take ownership of engine or registry. Both must outlive this.
+  // Overridable timing constants for testing. Production
+  // code uses the defaults; tests can inject short values.
+  struct Options {
+    int terminal_retention_seconds = 3600;  // 1h
+    int max_calculating_seconds = 1800;     // 30m
+    int max_sessions = 1000;
+  };
+
+  // Production constructor — uses default Options.
   SessionManager(LlamaEngine* engine, const PolicyRegistry* registry);
 
-  // F13: Destructor waits for any in-flight background threads to complete
-  // before allowing member destruction, preventing dangling-pointer UB.
+  // Test constructor — accepts custom Options.
+  SessionManager(LlamaEngine* engine, const PolicyRegistry* registry,
+                 const Options& options);
+
+  // F13: Destructor waits for any in-flight background
+  // threads to complete before allowing member destruction,
+  // preventing dangling-pointer UB.
   ~SessionManager();
 
   // --- Session RPCs ---
@@ -71,6 +84,11 @@ class SessionManager {
 
   absl::StatusOr<GetSessionStatusResponse> GetSessionStatus(
       const GetSessionStatusRequest& request);
+
+  // Validate a JSON string against a JSON Schema (supporting type, pattern,
+  // properties, required, minItems, maxItems, additionalProperties).
+  absl::Status ValidateJsonSchema(const std::string& json_str,
+                                  const std::string& schema_json);
 
  private:
   struct Participant {
@@ -129,13 +147,9 @@ class SessionManager {
   // to avoid blocking the gRPC thread pool (F10).
   void ProcessSessionAsync(const std::string& session_id);
 
-  // Validate a JSON string against a JSON Schema (supporting type, pattern,
-  // properties, required, minItems, maxItems, additionalProperties).
-  absl::Status ValidateJsonSchema(const std::string& json_str,
-                                  const std::string& schema_json);
-
   LlamaEngine* engine_;             // Not owned.
   const PolicyRegistry* registry_;  // Not owned.
+  Options options_;
   mutable std::mutex mu_;
   absl::flat_hash_map<std::string, Session> sessions_;
 

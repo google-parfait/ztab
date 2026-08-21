@@ -861,12 +861,8 @@ def _wait_for_phase1_completion(ports, csrf_token, cascade_ids, run_dir,
         if ok:
           if info["status"] == 1:  # IDLE — clean completion
             print(f"  Agent {i}: Phase 1 PASS ✓ (IDLE after {elapsed}s)")
-          else:
-            print(f"  Agent {i}: Phase 1 PASS ✓ "
-                  f"(install verified on disk, status={status_name}, "
-                  f"{elapsed}s)")
-          completed.add(i)
-          idle_incomplete_since.pop(i, None)
+            completed.add(i)
+            idle_incomplete_since.pop(i, None)
         elif info["status"] == 1:  # IDLE but install incomplete
           if i not in idle_incomplete_since:
             idle_incomplete_since[i] = time.time()

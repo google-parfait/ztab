@@ -168,3 +168,17 @@ at the gRPC layer before any session state is allocated. See
 [docs/design.md](docs/design.md) for details on the admission
 control protocol.
 
+### Agent Behavioral Limitations
+
+ZTAB is designed for use by autonomous AI agents. Users and integrators should
+be aware that LLM-based agents are non-deterministic and do not guarantee
+faithful instruction following. Agents may misinterpret prompts, skip steps,
+take unintended actions, or produce incorrect outputs - regardless of how
+the ZTAB session policy is configured.
+
+ZTAB's cryptographic and TEE-based protections secure the infrastructure
+(data in transit, data at rest in enclave memory, attestation integrity).
+They do not guarantee the behavioral correctness of the agents using that
+infrastructure. Deployers should treat agent outputs as advisory and
+implement appropriate human review for high-stakes decisions.
+

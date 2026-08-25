@@ -63,7 +63,11 @@ def _make_stub(args):
         getattr(args, 'expected_digest', None),
         allow_debug=getattr(args, 'allow_debug_tee', False),
     )
-    channel_wrapper = ZtabChannel(host=args.host, port=args.port, verifier=verifier)
+    channel_wrapper = ZtabChannel(
+        host=args.host,
+        port=args.port,
+        verifier=verifier,
+    )
     channel_wrapper.connect()
     stub = session_manager_pb2_grpc.AgentBrokerServiceStub(channel_wrapper.grpc_channel)
     return stub, channel_wrapper

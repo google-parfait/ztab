@@ -126,12 +126,12 @@ flag:
 
 | Mode | Flag | Purpose | Security |
 | :--- | :--- | :--- | :--- |
-| **Production** | `--verifier ita` | Real deployments on Confidential Computing VMs (e.g., GCP with Intel TDX + H100). | Full hardware root of trust verified by Intel Trust Authority. Connections are established over RA-TLS with attestation reports cryptographically bound to the server's ephemeral key. |
-| **Local development** | `--verifier noop` | Local testing without TEE hardware. | ⚠️ **No security guarantees.** The server generates unsigned mock attestation tokens. This mode must never be used for production or for processing real sensitive data. |
+| **Production** | `--verifier ita` | Real deployments on Confidential Computing VMs (e.g., GCP with Intel TDX + H100). | Full hardware root of trust verified by Intel Trust Authority. Requires `--expected-digest` to verify container image identity. |
+| **Local development** | `--verifier noop` | Local testing without TEE hardware. | ⚠️ **No security guarantees.** Permitted ONLY when `ZTAB_TEST_ENVIRONMENT=1` is set. Must never be used in production. |
 
 The `--verifier` flag is **required** when configuring a backend
-via `install_mcp.sh --add-backend`, ensuring deployments always
-make an explicit attestation choice.
+via `install_mcp.sh --add-backend` or using `cli.py`, ensuring deployments
+always make an explicit attestation choice.
 
 ### Semantic Leakage
 

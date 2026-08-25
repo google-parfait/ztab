@@ -37,22 +37,39 @@ FAKE_CERT_PEM = b"-----BEGIN CERTIFICATE-----\nfake\n"
 class NoopVerifierTest(unittest.TestCase):
     """Tests for noop_verifier."""
 
-    def test_noop_verifier_returns_true(self):
-        """noop_verifier returns True for a typical input."""
-        result = noop_verifier('token', b'cert')
-        self.assertTrue(result)
+    def test_noop_verifier_fails_without_test_env(self):
+        """noop_verifier raises RuntimeError when ZTAB_TEST_ENVIRONMENT is unset."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                noop_verifier('token', b'cert')
+            self.assertIn("strictly forbidden", str(ctx.exception))
 
-    def test_noop_verifier_always_true(self):
-        """noop_verifier returns True for arbitrary inputs."""
-        self.assertTrue(noop_verifier('', b''))
-        self.assertTrue(noop_verifier('abc', b'\x00\xff'))
-        self.assertTrue(
-            noop_verifier('long' * 100, b'x' * 999)
-        )
+    def test_noop_verifier_returns_true_with_test_env(self):
+        """noop_verifier returns True when ZTAB_TEST_ENVIRONMENT=1."""
+        with mock.patch.dict(os.environ, {"ZTAB_TEST_ENVIRONMENT": "1"}):
+            self.assertTrue(noop_verifier('token', b'cert'))
+            self.assertTrue(noop_verifier('', b''))
+            self.assertTrue(noop_verifier('abc', b'\x00\xff'))
+            self.assertTrue(noop_verifier('long' * 100, b'x' * 999))
 
 
 class ZtabChannelTest(unittest.TestCase):
     """Tests for ZtabChannel (connect, close, context)."""
+
+    def setUp(self):
+        self.env_patcher = mock.patch.dict(
+            os.environ, {"ZTAB_TEST_ENVIRONMENT": "1"}
+        )
+        self.env_patcher.start()
+
+    def tearDown(self):
+        self.env_patcher.stop()
+
+    def test_channel_init_requires_verifier(self):
+        """ZtabChannel raises ValueError if verifier is None."""
+        with self.assertRaises(ValueError) as ctx:
+            ZtabChannel('localhost', 8000, verifier=None)
+        self.assertIn("A verifier is required", str(ctx.exception))
 
     @mock.patch('client.grpc.secure_channel')
     @mock.patch('client.grpc.ssl_channel_credentials')
@@ -88,7 +105,10 @@ class ZtabChannelTest(unittest.TestCase):
         mock_fetch.return_value = FAKE_CERT_PEM
         mock_extract.return_value = None
 
-        ch = ZtabChannel('localhost', 8000)
+        ch = ZtabChannel(
+            'localhost', 8000,
+            verifier=noop_verifier,
+        )
         with self.assertRaises(RuntimeError):
             ch.connect()
 
@@ -110,7 +130,10 @@ class ZtabChannelTest(unittest.TestCase):
 
     def test_channel_close(self):
         """close() calls grpc_channel.close(), sets to None."""
-        ch = ZtabChannel('localhost', 8000)
+        ch = ZtabChannel(
+            'localhost', 8000,
+            verifier=noop_verifier,
+        )
         mock_grpc_ch = mock.MagicMock()
         ch.grpc_channel = mock_grpc_ch
 

@@ -22,8 +22,9 @@ production, the verifier will validate the GCP OIDC JWT signature, claims, and
 the key-binding nonce.
 """
 
-import ssl
+import os
 import socket
+import ssl
 from typing import Callable, Optional
 
 from cryptography import x509
@@ -57,9 +58,6 @@ def _fetch_server_cert_pem(host: str, port: int) -> bytes:
             return cert.public_bytes(Encoding.PEM)
 
 
-
-
-
 # Type alias for a verifier function. Takes the attestation token string
 # and the PEM cert bytes. Returns True if verification passes.
 AttestationVerifier = Callable[[str, bytes], bool]
@@ -67,10 +65,16 @@ AttestationVerifier = Callable[[str, bytes], bool]
 
 def noop_verifier(token: str, cert_pem: bytes) -> bool:
     """No-op verifier that prints the attestation token and always passes.
-    
-    WARNING: This verifier performs no actual validation and should ONLY be used
-    for testing or in environments where attestation is not required.
+
+    WARNING: This verifier performs NO validation. It is strictly forbidden
+    outside test environments. Setting ZTAB_TEST_ENVIRONMENT=1 is required.
     """
+    if os.environ.get("ZTAB_TEST_ENVIRONMENT") != "1":
+        raise RuntimeError(
+            "noop_verifier is strictly forbidden outside test environments. "
+            "Set ZTAB_TEST_ENVIRONMENT=1 to allow in test harnesses, or use "
+            "create_ita_verifier() for production."
+        )
     print("=" * 60)
     print("ATTESTATION TOKEN (no-op verifier, not validated):")
     print("-" * 60)
@@ -83,17 +87,30 @@ class ZtabChannel:
     """A gRPC channel to a ZTAB server with attestation verification.
 
     Usage:
-        channel = ZtabChannel("localhost", 8000)
+        from ita_verifier import create_ita_verifier
+        verifier = create_ita_verifier(
+            expected_image_digest="sha256:abc123..."
+        )
+        channel = ZtabChannel("localhost", 8000, verifier=verifier)
         channel.connect()
         # Use channel.grpc_channel for RPC stubs.
+
+    The verifier parameter is required. To use noop_verifier for local testing,
+    ZTAB_TEST_ENVIRONMENT=1 must be set in the environment.
     """
 
     def __init__(
         self,
         host: str,
         port: int,
-        verifier: AttestationVerifier = noop_verifier,
+        verifier: AttestationVerifier,
     ):
+        if verifier is None:
+            raise ValueError(
+                "A verifier is required. Use create_ita_verifier() for "
+                "production, or noop_verifier with ZTAB_TEST_ENVIRONMENT=1 "
+                "for local testing."
+            )
         self.host = host
         self.port = port
         self.verifier = verifier

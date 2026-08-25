@@ -418,6 +418,38 @@ certificate.
 verified with a 300-second clock skew tolerance to accommodate
 transient clock drift on freshly booted cloud VMs.
 
+**Attestation freshness properties:**
+
+The current nonce `Base64URL(SHA-256(cert_pubkey))` provides
+**key binding**: the attestation token is cryptographically bound
+to the server's ephemeral TLS key. A valid token cannot be reused
+with a different key pair. Combined with ephemeral per-connection
+key generation and the short token lifetime (~5–10 minutes),
+this limits the window during which a captured token could
+theoretically be replayed.
+
+However, the current mechanism does **not** provide interactive
+client-verifiable freshness. There is no challenge-response
+element — the nonce depends only on the server's key, not on any
+client-supplied entropy. A future improvement will incorporate
+`ClientHello.random` into the nonce computation (composite nonce)
+to bind the attestation to each individual TLS session, or use
+TLS Keying Material Export (RFC 5705) for full channel binding.
+
+**Container image digest verification:**
+
+> **⚠️ IMPORTANT:** Client-side verification of the container
+> image digest (`submods.container.image_digest` in the
+> attestation token) is the critical component for establishing
+> trust in the server's identity. Without it, any GCP
+> Confidential Space workload running on matching hardware can
+> obtain a valid attestation token — the client cannot
+> distinguish the legitimate ZTAB server from a malicious
+> workload. Callers **must** provide an `expected_image_digest`
+> when creating the ITA verifier for production use. Omitting
+> the digest check is only appropriate for local development
+> and testing.
+
 ### 3.3 Attestation Providers
 
 Two attestation provider implementations are supported. The `mock`

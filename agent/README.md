@@ -245,22 +245,23 @@ This validates the full MCP lifecycle: `initialize` →
 
 ### Pluggable Verifiers
 
-`ZtabChannel` accepts a `verifier` callback that receives the
-decoded attestation claims dict and can accept or reject the
-connection. This allows different trust policies:
+`ZtabChannel` requires a `verifier` callback that receives the attestation
+token and certificate bytes, returning `True` if verification passes:
 
-*   `noop_verifier` — accepts all (development/testing).
-*   Custom verifiers can check specific `image_digest` values,
-    require `secboot: true`, or validate the JWT signature
-    against known public keys.
+*   `ita` (`ita_verifier.py`): Full Intel Trust Authority verification
+    including JWT signature, claims, key-binding nonce, and container image
+    digest. For production security, `expected_image_digest` is required.
+*   `noop` (`client.py`): Accepts all certificates without validation.
+    Strictly forbidden in production; only allowed in local test environments
+    when `ZTAB_TEST_ENVIRONMENT=1` is set.
 
-The `verifier_factory.py` module provides a factory function
-that returns the appropriate verifier callback by name:
+The `verifier_factory.py` module provides a factory function that returns the
+appropriate verifier callback by name:
 
 | Name | Module | Description |
 | :--- | :--- | :--- |
-| `noop` | (built-in) | Accepts any attestation. For development. |
-| `ita` | `ita_verifier.py` | Full ITA verification: JWT signature, claims, key-binding, digest. |
+| `ita` | `ita_verifier.py` | Full ITA verification: signature, claims, key-binding, digest. |
+| `noop` | `client.py` | Accepts any cert. Test-only (requires `ZTAB_TEST_ENVIRONMENT=1`). |
 
 ### stdout Protection
 

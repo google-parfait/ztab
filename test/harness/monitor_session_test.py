@@ -121,12 +121,14 @@ def _scan_agent_for_session_metadata(agent, label, old_last_step):
   return invitation_token, creator_token
 
 
-def _connect_to_tee(tee_host, tee_port, verifier):
+def _connect_to_tee(tee_host, tee_port, verifier, expected_digest=None):
   """Establish a gRPC channel to the TEE server.
 
   Returns (channel, stub) or raises on error.
   """
-  verifier_obj = get_verifier(verifier, allow_debug=True)
+  verifier_obj = get_verifier(
+      verifier, expected_digest=expected_digest, allow_debug=True
+  )
   channel = ZtabChannel(host=tee_host, port=tee_port, verifier=verifier_obj)
   grpc_chan = channel.connect()
   stub = session_manager_pb2_grpc.AgentBrokerServiceStub(grpc_chan)
@@ -385,6 +387,7 @@ def monitor_agents(
     tee_host="",
     tee_port=0,
     verifier="noop",
+    expected_digest=None,
 ):
   if tee_host and tee_port:
     # Set up paths and import gRPC/ZTAB packages conditionally
@@ -527,7 +530,9 @@ def monitor_agents(
     # Direct TEE server verification (Point 1 & 2)
     if tee_host and tee_port and invitation_token and creator_token:
       if tee_stub is None:
-        tee_channel, tee_stub = _connect_to_tee(tee_host, tee_port, verifier)
+        tee_channel, tee_stub = _connect_to_tee(
+            tee_host, tee_port, verifier, expected_digest=expected_digest
+        )
 
       if tee_stub is not None:
         try:
@@ -541,7 +546,8 @@ def monitor_agents(
             if tee_channel:
               tee_channel.close()
             tee_channel, tee_stub = _connect_to_tee(
-                tee_host, tee_port, verifier)
+                tee_host, tee_port, verifier, expected_digest=expected_digest
+            )
             tee_state = _poll_tee_status(
                 tee_stub, creator_token)
           else:
@@ -653,6 +659,11 @@ def main():
       help="Expected verifier (noop/ita) for TEE connection",
   )
   parser.add_argument(
+      "--expected_digest",
+      default=None,
+      help="Expected container image digest for ITA verifier",
+  )
+  parser.add_argument(
       "--timeout",
       type=int,
       default=900,
@@ -688,6 +699,7 @@ def main():
       tee_host=args.tee_host,
       tee_port=args.tee_port,
       verifier=args.verifier,
+      expected_digest=args.expected_digest,
   )
 
   print(f"\n{'='*50}", file=sys.stderr)

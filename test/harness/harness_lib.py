@@ -33,7 +33,7 @@ import urllib.request
 # ---------------------------------------------------------------------------
 
 
-def get_discovered_http_port(workspace_id, gemini_dir, timeout=15):
+def get_discovered_http_port(workspace_id, gemini_dir, timeout=60):
   """Discover the HTTP port of a running Language Server instance.
 
   The LS writes a discovery JSON file to:
@@ -47,7 +47,7 @@ def get_discovered_http_port(workspace_id, gemini_dir, timeout=15):
     workspace_id: The workspace ID string (e.g. "file:///path/to/workspace").
         Must include the file:// prefix.
     gemini_dir: Path to the .gemini directory (e.g. /root/.gemini/app_data_dir).
-    timeout: Max seconds to wait for the discovery file (default: 15).
+    timeout: Max seconds to wait for the discovery file (default: 60).
 
   Returns:
     The discovered HTTP port (int).

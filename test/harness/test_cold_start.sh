@@ -304,6 +304,10 @@ EOF
     exit 1
   fi
 
+  if [[ "$VERIFIER" == "noop" ]]; then
+    export ZTAB_TEST_ENVIRONMENT=1
+  fi
+
 
   # --- Apply GCS bucket default ---
   if [[ -z "$GCS_BUCKET" ]]; then
@@ -743,7 +747,7 @@ import sys
 sys.path.insert(0, '$(dirname "${BASH_SOURCE[0]}")')
 from harness_lib import get_discovered_http_port
 try:
-    port = get_discovered_http_port('$WORKSPACE_ID', '$gemini_dir', timeout=30)
+    port = get_discovered_http_port('$WORKSPACE_ID', '$gemini_dir', timeout=60)
     print(port)
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr)
@@ -869,6 +873,11 @@ poll_results() {
     monitor_python="$agent1_venv"
   fi
 
+  local monitor_digest_flag=""
+  if [[ -n "$EXPECTED_DIGEST" ]]; then
+    monitor_digest_flag="--expected_digest $EXPECTED_DIGEST"
+  fi
+
   "$monitor_python" "$SCRIPT_DIR/monitor_session_test.py" \
     --ports "$ports_csv" \
     --csrf_token "$STATIC_TOKEN" \
@@ -877,7 +886,8 @@ poll_results() {
     --timeout 900 \
     --tee_host "$TEE_HOST" \
     --tee_port "$TEE_PORT" \
-    --verifier "$VERIFIER"
+    --verifier "$VERIFIER" \
+    $monitor_digest_flag
   MONITOR_EXIT=$?
   if [[ $MONITOR_EXIT -ne 0 ]]; then
     log "  ERROR: Monitor exited with code $MONITOR_EXIT"

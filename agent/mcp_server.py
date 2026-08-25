@@ -335,10 +335,16 @@ from verifier_factory import get_verifier as _get_verifier
 _CHANNEL_CACHE = {}  # backend_id -> (ZtabChannel, stub)
 
 
-def _get_stub(host, port, verifier_name="noop", expected_digest=None, allow_debug=False):
+def _get_stub(host, port, verifier_name, expected_digest=None, allow_debug=False):
     """Create a connected gRPC stub (uncached — use _get_cached_stub instead)."""
-    verifier = _get_verifier(verifier_name, expected_digest, allow_debug)
-    channel_wrapper = ZtabChannel(host=host, port=port, verifier=verifier)
+    verifier = _get_verifier(
+        verifier_name, expected_digest, allow_debug
+    )
+    channel_wrapper = ZtabChannel(
+        host=host,
+        port=port,
+        verifier=verifier,
+    )
     grpc_channel = channel_wrapper.connect()
     stub = session_manager_pb2_grpc.AgentBrokerServiceStub(grpc_channel)
     return channel_wrapper, stub
@@ -424,7 +430,7 @@ def run_list_backends(_arguments):
     }
 
 
-def run_connectivity_test(host, port, message, verifier_name="noop",
+def run_connectivity_test(host, port, message, verifier_name,
                          expected_digest=None, allow_debug=False):
     """Connects to server, extracts attestation, runs Echo RPC.
 

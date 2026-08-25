@@ -15,6 +15,8 @@
 
 """Unit tests for ITA verifier and verifier factory."""
 
+import datetime
+import os
 import sys
 import unittest
 from unittest import mock
@@ -24,7 +26,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization
-import datetime
 
 from agent import ita_verifier
 from agent import verifier_factory
@@ -63,6 +64,11 @@ _GOOD_CLAIMS = {
     "secboot": True,
     "dbgstat": "disabled-since-boot",
     "eat_nonce": "expected-nonce",
+    "submods": {
+        "container": {
+            "image_digest": "sha256:abc123testdigest",
+        },
+    },
 }
 
 
@@ -156,6 +162,9 @@ class ItaVerifierClaimTest(unittest.TestCase):
         extra_patches = kwargs.pop(
             "extra_patches", []
         )
+        kwargs.setdefault(
+            "expected_image_digest", "sha256:abc123testdigest"
+        )
         verifier = ita_verifier.create_ita_verifier(
             **kwargs
         )
@@ -165,9 +174,6 @@ class ItaVerifierClaimTest(unittest.TestCase):
         for p in patches:
             p.start()
         try:
-            nonce_patch = kwargs.get(
-                "_nonce_patch", None
-            )
             return verifier("token", b"cert-pem")
         finally:
             for p in patches:
@@ -208,17 +214,37 @@ class ItaVerifierClaimTest(unittest.TestCase):
 class VerifierFactoryTest(unittest.TestCase):
     """Tests for verifier_factory.get_verifier."""
 
-    def test_get_verifier_noop(self):
-        v = verifier_factory.get_verifier("noop")
-        # Can't use assertIs because module import paths
-        # differ. Verify it behaves like noop_verifier.
-        self.assertTrue(callable(v))
-        self.assertTrue(v("token", b"cert"))
+    def test_get_verifier_noop_without_test_env_raises(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                verifier_factory.get_verifier("noop")
+            self.assertIn("strictly forbidden", str(ctx.exception))
+
+    def test_get_verifier_noop_with_test_env(self):
+        with mock.patch.dict(os.environ, {"ZTAB_TEST_ENVIRONMENT": "1"}):
+            v = verifier_factory.get_verifier("noop")
+            self.assertTrue(callable(v))
+            self.assertTrue(v("token", b"cert"))
 
     def test_get_verifier_unknown_exits(self):
         with self.assertRaises(SystemExit) as ctx:
             verifier_factory.get_verifier("unknown")
         self.assertEqual(ctx.exception.code, 1)
+
+    def test_get_verifier_ita_requires_digest(self):
+        """get_verifier('ita') raises ValueError if expected_digest is missing."""
+        with self.assertRaises(ValueError) as ctx:
+            verifier_factory.get_verifier("ita")
+        self.assertIn("requires an expected container image digest", str(ctx.exception))
+
+    def test_get_verifier_ita_returns_callable(self):
+        """get_verifier('ita') returns an ITA verifier callable when digest is provided."""
+        v = verifier_factory.get_verifier(
+            "ita",
+            expected_digest="sha256:abc123testdigest",
+            allow_debug=True,
+        )
+        self.assertTrue(callable(v))
 
 import time
 
@@ -277,7 +303,9 @@ class JwksCachingTest(unittest.TestCase):
             p.start()
         try:
             verifier = (
-                ita_verifier.create_ita_verifier()
+                ita_verifier.create_ita_verifier(
+                    expected_image_digest="sha256:abc123testdigest",
+                )
             )
             result = verifier("tok", b"cert")
         finally:
@@ -344,7 +372,9 @@ class JwksCachingTest(unittest.TestCase):
             p.start()
         try:
             verifier = (
-                ita_verifier.create_ita_verifier()
+                ita_verifier.create_ita_verifier(
+                    expected_image_digest="sha256:abc123testdigest",
+                )
             )
             verifier("tok", b"cert")
         finally:
@@ -420,7 +450,9 @@ class KeyRotationTest(unittest.TestCase):
         )
 
         verifier = (
-            ita_verifier.create_ita_verifier()
+            ita_verifier.create_ita_verifier(
+                expected_image_digest="sha256:abc123testdigest",
+            )
         )
         verifier("tok", b"cert")
 
@@ -487,12 +519,27 @@ class ContainerDigestTest(unittest.TestCase):
         )
         self.assertFalse(result)
 
-    def test_empty_digest_skips(self):
-        """Empty expected_image_digest skips
-        digest check."""
+    def test_empty_digest_raises_at_verifier_creation(self):
+        """Empty expected_image_digest raises ValueError at creation time."""
+        with self.assertRaises(ValueError) as ctx:
+            ita_verifier.create_ita_verifier(
+                expected_image_digest="",
+            )
+        self.assertIn("must be a non-empty string", str(ctx.exception))
+
+    def test_none_digest_raises_at_verifier_creation(self):
+        """None expected_image_digest raises ValueError at creation time."""
+        with self.assertRaises(ValueError) as ctx:
+            ita_verifier.create_ita_verifier(
+                expected_image_digest=None,
+            )
+        self.assertIn("must be a non-empty string", str(ctx.exception))
+
+    def test_missing_container_in_token_fails(self):
+        """Token with missing container claim returns False."""
         claims_dict = _claims(
             eat_nonce="expected-nonce",
-            submods={"container": {}},
+            submods={},
         )
         nonce_patch = mock.patch.object(
             ita_verifier,
@@ -504,7 +551,7 @@ class ContainerDigestTest(unittest.TestCase):
 
         verifier = (
             ita_verifier.create_ita_verifier(
-                expected_image_digest="",
+                expected_image_digest="sha256:abc123",
             )
         )
         for p in patches:
@@ -515,7 +562,7 @@ class ContainerDigestTest(unittest.TestCase):
             for p in patches:
                 p.stop()
 
-        self.assertTrue(result)
+        self.assertFalse(result)
 
 
 if __name__ == "__main__":

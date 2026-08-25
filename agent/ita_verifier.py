@@ -109,10 +109,10 @@ _JWKS_LOCK = threading.Lock()
 _JWKS_TTL = 86400  # 24 hours
 
 def create_ita_verifier(
+    expected_image_digest: str,
     jwks_url: str = ITA_JWKS_URL,
     expected_audience: str = DEFAULT_AUDIENCE,
     expected_issuers: Optional[Set[str]] = None,
-    expected_image_digest: Optional[str] = None,
     require_secure_boot: bool = True,
     require_debug_disabled: bool = True,
     clock_skew_seconds: int = 300,
@@ -123,10 +123,11 @@ def create_ita_verifier(
         (token: str, cert_pem: bytes) -> bool
 
     Args:
+        expected_image_digest: Expected container image digest (e.g. 'sha256:...').
+            Mandatory for establishing trust against the correct server workload.
         jwks_url: URL to fetch ITA JWKS from.
         expected_audience: Expected 'aud' claim.
         expected_issuers: Set of acceptable 'iss' values. Defaults to ITA issuer.
-        expected_image_digest: If set, require container image_digest to match.
         require_secure_boot: If True, require secboot == True.
         require_debug_disabled: If True, validate dbgstat against VALID_DBG_STATES.
             Note: This defaults to True for strict security. If testing with GCP Confidential
@@ -134,6 +135,12 @@ def create_ita_verifier(
             the 'enabled' debug state.
         clock_skew_seconds: Allowed clock skew for exp/nbf validation.
     """
+    if not expected_image_digest:
+        raise ValueError(
+            "expected_image_digest must be a non-empty string (e.g. 'sha256:...'). "
+            "Without container image digest verification, any Confidential Space workload can produce a valid token."
+        )
+
     if expected_issuers is None:
         expected_issuers = {ITA_ISSUER}
 
@@ -281,23 +288,24 @@ def create_ita_verifier(
             return False
         logger.info("  [OK] Key binding (eat_nonce matches cert pubkey hash)")
 
-        # --- Step 5: Optional container image digest ---
-        if expected_image_digest is not None and expected_image_digest != "":
-            submods = claims.get("submods", {})
-            container = submods.get("container", {})
-            actual_digest = container.get("image_digest", "")
-            if actual_digest != expected_image_digest:
-                logger.error("Image digest mismatch!")
-                logger.error("  Actual:   %s", actual_digest)
-                logger.error("  Expected: %s", expected_image_digest)
-                return False
-            logger.info("  [OK] Container image digest: %s", actual_digest)
-        else:
-            submods = claims.get("submods", {})
-            container = submods.get("container", {})
-            image_digest = container.get("image_digest", "<not present>")
-            logger.info("  [INFO] Container image digest (not verified): "
-                        "%s", image_digest)
+        # --- Step 5: Container image digest ---
+        submods = claims.get("submods", {})
+        container = submods.get("container", {})
+        actual_digest = container.get("image_digest", "")
+        if not actual_digest:
+            logger.error(
+                "Attestation token does not contain a container image digest."
+            )
+            return False
+        if actual_digest != expected_image_digest:
+            logger.error("Image digest mismatch!")
+            logger.error("  Actual:   %s", actual_digest)
+            logger.error("  Expected: %s", expected_image_digest)
+            return False
+        logger.info(
+            "  [OK] Container image digest: %s",
+            actual_digest,
+        )
 
         logger.info("-" * 60)
         logger.info("ATTESTATION VERIFICATION PASSED")

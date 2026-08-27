@@ -25,11 +25,11 @@
 #   bash agent/install_mcp.sh
 #
 #   # Install and configure a specific backend:
-#   bash agent/install_mcp.sh --add-backend my-tee HOST PORT --set-default
+#   bash agent/install_mcp.sh --add_backend my-tee HOST PORT --set_default
 #
 #   # With admission control:
-#   bash agent/install_mcp.sh --add-backend my-tee HOST PORT \
-#       --creator-token TOKEN --set-default
+#   bash agent/install_mcp.sh --add_backend my-tee HOST PORT \
+#       --creator_token TOKEN --set_default
 #
 # Default venv_path is ~/.ztab-venv
 
@@ -49,7 +49,7 @@ REGISTER_MCP="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --add-backend)
+    --add_backend)
       BACKEND_ID="$2"; BACKEND_HOST="$3"; BACKEND_PORT="$4"
       shift 4
       ;;
@@ -59,19 +59,19 @@ while [[ $# -gt 0 ]]; do
     --digest)
       BACKEND_DIGEST="$2"; shift 2
       ;;
-    --allow-debug-tee)
+    --allow_debug_tee)
       BACKEND_ALLOW_DEBUG="true"; shift
       ;;
-    --no-debug-tee)
+    --no_debug_tee)
       BACKEND_ALLOW_DEBUG="false"; shift
       ;;
-    --creator-token)
+    --creator_token)
       BACKEND_CREATOR_TOKEN="$2"; shift 2
       ;;
-    --set-default)
+    --set_default)
       BACKEND_SET_DEFAULT="true"; shift
       ;;
-    --do-not-register)
+    --do_not_register)
       REGISTER_MCP="false"; shift
       ;;
     --register)
@@ -83,17 +83,17 @@ while [[ $# -gt 0 ]]; do
       echo "  ./install_mcp.sh [options]"
       echo ""
       echo "Installs the ZTAB MCP server (venv + deps + registration)."
-      echo "If --add-backend is given, also configures that backend."
+      echo "If --add_backend is given, also configures that backend."
       echo ""
       echo "Options:"
-      echo "  --add-backend ID HOST PORT  Configure a TEE backend"
+      echo "  --add_backend ID HOST PORT  Configure a TEE backend"
       echo "  --verifier TYPE             Verifier: noop|ita (default: noop)"
       echo "  --digest DIGEST             Expected image digest (default: empty)"
-      echo "  --allow-debug-tee           Allow debug TEE (default)"
-      echo "  --no-debug-tee              Reject debug TEE (for production)"
-      echo "  --creator-token TOKEN       Creator token for admission control"
-      echo "  --set-default               Make this the default backend"
-      echo "  --do-not-register           Skip mcp_config.json registration"
+      echo "  --allow_debug_tee           Allow debug TEE (default)"
+      echo "  --no_debug_tee              Reject debug TEE (for production)"
+      echo "  --creator_token TOKEN       Creator token for admission control"
+      echo "  --set_default               Make this the default backend"
+      echo "  --do_not_register           Skip mcp_config.json registration"
       exit 0
       ;;
     *)
@@ -142,13 +142,13 @@ BACKENDS_DIR="$HOME/.ztab"
 BACKENDS_FILE="${BACKENDS_DIR}/backends.json"
 
 if [ -n "$BACKEND_ID" ]; then
-  # --add-backend was specified: configure that backend.
+  # --add_backend was specified: configure that backend.
   if [ -z "$BACKEND_HOST" ] || [ -z "$BACKEND_PORT" ]; then
-    echo "Error: --add-backend requires ID HOST PORT arguments." >&2
+    echo "Error: --add_backend requires ID HOST PORT arguments." >&2
     exit 1
   fi
   if [ -z "$BACKEND_VERIFIER" ]; then
-    echo "Error: --verifier is required with --add-backend." >&2
+    echo "Error: --verifier is required with --add_backend." >&2
     echo "  Use --verifier noop (local dev) or --verifier ita (production)." >&2
     exit 1
   fi
@@ -224,7 +224,7 @@ os.replace(tmp, '${BACKENDS_FILE}')
   fi
 
 elif [ ! -f "$BACKENDS_FILE" ]; then
-  # No --add-backend and no existing config: create default.
+  # No --add_backend and no existing config: create default.
   echo "Creating default ZTAB backends configuration at ${BACKENDS_FILE}..."
   mkdir -p "$BACKENDS_DIR"
   cat <<'EOF' > "$BACKENDS_FILE"
@@ -293,5 +293,5 @@ else
 EOF
   echo ""
   echo "------------------------------------------------------------"
-  echo "Or re-run without --do-not-register to do this automatically."
+  echo "Or re-run without --do_not_register to do this automatically."
 fi

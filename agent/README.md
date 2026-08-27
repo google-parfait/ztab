@@ -60,7 +60,7 @@ Google's Confidential Computing OIDC public keys.
 | `attestation.py` | Extracts attestation tokens from X.509 certificate extensions (OID parsing, ASN.1 unwrapping). |
 | `ita_verifier.py` | Full Intel Trust Authority JWT verification: signature, claims, key-binding, container digest. |
 | `verifier_factory.py` | Factory for selecting verifier by name (`noop` or `ita`). |
-| `install_mcp.sh` | Automated MCP server registration and backend configuration. Supports `--add-backend`, `--creator-token`. |
+| `install_mcp.sh` | Automated MCP server registration and backend configuration. Supports `--add_backend`, `--creator_token`. |
 
 ## Setup
 
@@ -114,7 +114,7 @@ python3 cli.py --host localhost --port 8000 \
 # When testing against debug images with Intel Trust Authority
 python3 cli.py --host <GCP_IP> --port 8000 \
     --verifier ita \
-    --allow-debug-tee \
+    --allow_debug_tee \
     --message "Hello ZTAB"
 ```
 
@@ -126,25 +126,25 @@ calls `Echo`, and prints the response.
 ```bash
 # Create a session:
 python3 cli.py --host localhost --port 8000 \
-    create-session --policy ScheduleOverlap \
-    --participants 2 --creator-token SECRET
+    create_session --policy ScheduleOverlap \
+    --participants 2 --creator_token SECRET
 
 # Join a session:
 python3 cli.py --host localhost --port 8000 \
-    join-session --invitation-token TOKEN
+    join_session --invitation_token TOKEN
 
 # Submit private input:
 python3 cli.py --host localhost --port 8000 \
-    submit-input --token TOKEN \
+    submit_input --token TOKEN \
     --input '{"calendar": [...]}'
 
 # Get result:
 python3 cli.py --host localhost --port 8000 \
-    get-result --token TOKEN
+    get_result --token TOKEN
 
 # Check session status:
 python3 cli.py --host localhost --port 8000 \
-    get-status --token TOKEN
+    get_status --token TOKEN
 ```
 
 ### TLS Diagnostics (no grpcio needed)
@@ -204,8 +204,8 @@ agent/install_mcp.sh \
     --backend-id gcp-prod \
     --host 10.0.0.1 --port 8000 \
     --verifier ita \
-    --expected-digest sha256:abc123... \
-    --creator-token SECRET
+    --expected_digest sha256:abc123... \
+    --creator_token SECRET
 ```
 
 ### Smoke Test
@@ -246,22 +246,26 @@ This validates the full MCP lifecycle: `initialize` →
 ### Pluggable Verifiers
 
 `ZtabChannel` requires a `verifier` callback that receives the attestation
-token and certificate bytes, returning `True` if verification passes:
+token and certificate bytes, returning `True` if verification passes.
 
-*   `ita` (`ita_verifier.py`): Full Intel Trust Authority verification
-    including JWT signature, claims, key-binding nonce, and container image
-    digest. For production security, `expected_image_digest` is required.
-*   `noop` (`client.py`): Accepts all certificates without validation.
+Verifiers are constructed using the `VerifierPolicy` architecture
+defined in `verifier_policy.py`:
+
+*   `ItaPolicy` (`ita_verifier.py`): Full Intel Trust Authority verification
+    including JWT signature, hardware claims, platform identity, key-binding nonce, and container image digest.
+    *   **Enforces:** `swname == CONFIDENTIAL_SPACE`, `cvm_compliance_status == gcp_compliant_cvm`, Secure Boot, and Intel TDX hardware.
+    *   **Configurable options:** `--expected_digest` (required), `--expected_project_id`, `--expected_service_account`, `--min_cs_version`, and `--clock_skew_seconds` (default 300s, for JWT `exp`/`nbf` tolerance on freshly booted VMs).
+*   `NoopPolicy` (`client.py`): Accepts all certificates without validation.
     Strictly forbidden in production; only allowed in local test environments
     when `ZTAB_TEST_ENVIRONMENT=1` is set.
 
-The `verifier_factory.py` module provides a factory function that returns the
-appropriate verifier callback by name:
+The `verifier_factory.py` module exposes `get_verifier(policy: VerifierPolicy)`
+which validates the policy object and returns the appropriate closure.
 
-| Name | Module | Description |
+| Policy | Module | Description |
 | :--- | :--- | :--- |
-| `ita` | `ita_verifier.py` | Full ITA verification: signature, claims, key-binding, digest. |
-| `noop` | `client.py` | Accepts any cert. Test-only (requires `ZTAB_TEST_ENVIRONMENT=1`). |
+| `ItaPolicy` | `ita_verifier.py` | Full ITA verification: signature, hardware claims, key-binding, digest, platform identity. |
+| `NoopPolicy` | `client.py` | Accepts any cert. Test-only (requires `ZTAB_TEST_ENVIRONMENT=1`). |
 
 ### stdout Protection
 

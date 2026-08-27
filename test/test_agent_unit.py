@@ -170,14 +170,14 @@ class CliParsingTest(unittest.TestCase):
   def test_create_session_arg_parsing(self):
     parser = cli.build_parser()
     args = parser.parse_args([
-        "create-session",
+        "create_session",
         "--verifier", "noop",
         "--host", "localhost",
         "--port", "8000",
         "--policy", "ScheduleOverlap",
         "--participants", "3",
-        "--creator-token", "my-secret-token",
-        "--client-nonce", "c9a646d3-9c61-4cd7-9f59-e1b630d7d80f",
+        "--creator_token", "my-secret-token",
+        "--client_nonce", "c9a646d3-9c61-4cd7-9f59-e1b630d7d80f",
     ])
     self.assertEqual(args.host, "localhost")
     self.assertEqual(args.port, 8000)
@@ -189,10 +189,10 @@ class CliParsingTest(unittest.TestCase):
   def test_join_session_arg_parsing(self):
     parser = cli.build_parser()
     args = parser.parse_args([
-        "join-session",
+        "join_session",
         "--verifier", "noop",
-        "--invitation-token", "inv-12345",
-        "--client-nonce", "e2d83b38-6b22-4a7b-83c9-04d9c7921a2b",
+        "--invitation_token", "inv-12345",
+        "--client_nonce", "e2d83b38-6b22-4a7b-83c9-04d9c7921a2b",
     ])
     self.assertEqual(args.invitation_token, "inv-12345")
     self.assertEqual(args.client_nonce, "e2d83b38-6b22-4a7b-83c9-04d9c7921a2b")
@@ -210,12 +210,12 @@ class CliParsingTest(unittest.TestCase):
 
     parser = cli.build_parser()
     args = parser.parse_args([
-        "create-session",
+        "create_session",
         "--verifier", "noop",
         "--policy", "ScheduleOverlap",
         "--participants", "2",
-        "--creator-token", "cli-creator-token-789",
-        "--client-nonce", "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "--creator_token", "cli-creator-token-789",
+        "--client_nonce", "f47ac10b-58cc-4372-a567-0e02b2c3d479",
     ])
     cli.cmd_create_session(args)
 
@@ -246,10 +246,10 @@ class CliParsingTest(unittest.TestCase):
 
     parser = cli.build_parser()
     args = parser.parse_args([
-        "join-session",
+        "join_session",
         "--verifier", "noop",
-        "--invitation-token", "inv-tok-999",
-        "--client-nonce", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        "--invitation_token", "inv-tok-999",
+        "--client_nonce", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
     ])
     cli.cmd_join_session(args)
 

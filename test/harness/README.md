@@ -197,8 +197,8 @@ trailing arguments to the Docker run command):
 | `--model_path PATH` | *None* | Path to the local model file (used for `local_build` mode). |
 | `--gcs_bucket URL` | *None* | GCS model bucket URL (used to pull weights in `docker_build` mode). |
 | `--phase1-only` | `0` | Stop after Phase 1 (ZTAB MCP server installation and config verification) without running the session lifecycle. |
-| `--dirty-state-battery` | `0` | Execute the D-series recovery tests (D1-D6) after the main test run. |
-| `--reuse-dir PATH` | *None* | Reuse the sandboxes from a previous run directory (required for `--dirty-state-battery`). |
+| `--dirty_state_battery` | `0` | Execute the D-series recovery tests (D1-D6) after the main test run. |
+| `--reuse_dir PATH` | *None* | Reuse the sandboxes from a previous run directory (required for `--dirty_state_battery`). |
 | `--app_data_dir NAME` | `antigravity-ide` | Name of the App Data directory to simulate under `HOME`. |
 | `--ls_bin PATH` | `/usr/local/bin/language_server` | Path to the Language Server binary to execute. |
 | `--ls_extra_flags STR` | *None* | Additional CLI flags to forward directly to the Language Server. |

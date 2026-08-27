@@ -64,6 +64,9 @@ TEE_MODE=""           # local_build, docker_build, gcp_discover, or connect
 VERIFIER=""           # noop or ita; auto-set if not specified
 MODEL_NAME="MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE"
 EXPECTED_DIGEST=""
+EXPECTED_PROJECT_ID=""
+EXPECTED_SERVICE_ACCOUNT=""
+MIN_CS_VERSION=""
 
 # --- Supported LS flags (passed via --ls_extra_flags) ---
 #   --standalone, --csrf_token, --workspace_id, --app_data_dir
@@ -76,11 +79,11 @@ APP_DATA_DIR="antigravity-ide"  # Override via --app_data_dir for internal wrapp
 
 STATIC_TOKEN="standalone-test-token"
 NUM_AGENTS=1          # default: 1-agent bootstrap test
-REUSE_DIR=""          # --reuse-dir <path> to reuse an existing run directory
-AUDIT_NON_BLOCKING=0  # --audit-non-blocking: audit failures become warnings
+REUSE_DIR=""          # --reuse_dir <path> to reuse an existing run directory
+AUDIT_NON_BLOCKING=0  # --audit_non_blocking: audit failures become warnings
 AUDIT_FAILED=0        # set by run_trajectory_audit if audit fails
 PHASE1_ONLY=0         # --phase1-only: only run install phase, skip session lifecycle
-DIRTY_BATTERY=0       # --dirty-state-battery: run D-series dirty state tests after normal run
+DIRTY_BATTERY=0       # --dirty_state_battery: run D-series dirty state tests after normal run
 CREATOR_TOKEN=""      # --creator_token: pre-shared token for gated CreateSession
 AGENT_IDS=""          # Phase 1 cascade IDs (set by trigger_agents)
 PHASE2_IDS=""         # Phase 2 cascade IDs (set by trigger_agents, may be empty)
@@ -184,13 +187,19 @@ setup_env() {
       --model=*) MODEL_NAME="${1#*=}"; shift ;;
       --expected_digest) EXPECTED_DIGEST="$2"; shift 2 ;;
       --expected_digest=*) EXPECTED_DIGEST="${1#*=}"; shift ;;
+      --expected_project_id) EXPECTED_PROJECT_ID="$2"; shift 2 ;;
+      --expected_project_id=*) EXPECTED_PROJECT_ID="${1#*=}"; shift ;;
+      --expected_service_account) EXPECTED_SERVICE_ACCOUNT="$2"; shift 2 ;;
+      --expected_service_account=*) EXPECTED_SERVICE_ACCOUNT="${1#*=}"; shift ;;
+      --min_cs_version) MIN_CS_VERSION="$2"; shift 2 ;;
+      --min_cs_version=*) MIN_CS_VERSION="${1#*=}"; shift ;;
       --num_agents) NUM_AGENTS="$2"; shift 2 ;;
       --num_agents=*) NUM_AGENTS="${1#*=}"; shift ;;
-      --reuse-dir) REUSE_DIR="$2"; shift 2 ;;
-      --reuse-dir=*) REUSE_DIR="${1#*=}"; shift ;;
-      --audit-non-blocking) AUDIT_NON_BLOCKING=1; shift ;;
+      --reuse_dir) REUSE_DIR="$2"; shift 2 ;;
+      --reuse_dir=*) REUSE_DIR="${1#*=}"; shift ;;
+      --audit_non_blocking) AUDIT_NON_BLOCKING=1; shift ;;
       --phase1-only) PHASE1_ONLY=1; shift ;;
-      --dirty-state-battery) DIRTY_BATTERY=1; shift ;;
+      --dirty_state_battery) DIRTY_BATTERY=1; shift ;;
       --creator_token) CREATOR_TOKEN="$2"; shift 2 ;;
       --creator_token=*) CREATOR_TOKEN="${1#*=}"; shift ;;
       --app_data_dir) APP_DATA_DIR="$2"; shift 2 ;;
@@ -233,10 +242,13 @@ Flags:
   --port PORT           TEE port (default: 8000; for connect mode)
   --model MODEL         LS model enum (default: MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE)
   --expected_digest D   Expected container digest for attestation
-  --reuse-dir PATH      Reuse existing run dir (dirty state)
-  --audit-non-blocking  Audit failures become warnings (don't fail the test)
+  --expected_project_id P   Expected GCP project ID (optional)
+  --expected_service_account SA   Expected GCP service account (optional)
+  --min_cs_version V  Minimum Confidential Space version (optional)
+  --reuse_dir PATH      Reuse existing run dir (dirty state)
+  --audit_non_blocking  Audit failures become warnings (don't fail the test)
   --phase1-only         Only run Phase 1 (install), skip session lifecycle
-  --dirty-state-battery Run D-series dirty state tests after normal run
+  --dirty_state_battery Run D-series dirty state tests after normal run
   --creator_token TOKEN Pre-shared token for gated CreateSession (admission control)
 EOF
         exit 0
@@ -877,6 +889,18 @@ poll_results() {
   if [[ -n "$EXPECTED_DIGEST" ]]; then
     monitor_digest_flag="--expected_digest $EXPECTED_DIGEST"
   fi
+  local monitor_project_flag=""
+  if [[ -n "$EXPECTED_PROJECT_ID" ]]; then
+    monitor_project_flag="--expected_project_id $EXPECTED_PROJECT_ID"
+  fi
+  local monitor_sa_flag=""
+  if [[ -n "$EXPECTED_SERVICE_ACCOUNT" ]]; then
+    monitor_sa_flag="--expected_service_account $EXPECTED_SERVICE_ACCOUNT"
+  fi
+  local monitor_version_flag=""
+  if [[ -n "$MIN_CS_VERSION" ]]; then
+    monitor_version_flag="--min_cs_version $MIN_CS_VERSION"
+  fi
 
   "$monitor_python" "$SCRIPT_DIR/monitor_session_test.py" \
     --ports "$ports_csv" \
@@ -887,7 +911,10 @@ poll_results() {
     --tee_host "$TEE_HOST" \
     --tee_port "$TEE_PORT" \
     --verifier "$VERIFIER" \
-    $monitor_digest_flag
+    $monitor_digest_flag \
+    $monitor_project_flag \
+    $monitor_sa_flag \
+    $monitor_version_flag
   MONITOR_EXIT=$?
   if [[ $MONITOR_EXIT -ne 0 ]]; then
     log "  ERROR: Monitor exited with code $MONITOR_EXIT"

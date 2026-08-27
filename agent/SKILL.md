@@ -26,8 +26,8 @@ tools are available in your environment.
 Run the install script with all your backend details:
 
 ```bash
-bash agent/install_mcp.sh --add-backend NAME HOST PORT \
-    --set-default [options]
+bash agent/install_mcp.sh --add_backend NAME HOST PORT \
+    --set_default [options]
 ```
 
 This single command does everything:
@@ -41,7 +41,7 @@ You do NOT need to edit any JSON files manually.
 **Checkpoint:** Verify the script prints
 `✅ Registered ztab in ~/.gemini/config/mcp_config.json`.
 
-If no `--add-backend` is given, a default `dev-local` backend
+If no `--add_backend` is given, a default `dev-local` backend
 pointing to `localhost:8000` is created.
 
 The script is safe to re-run. It skips venv creation if the
@@ -50,14 +50,14 @@ environment already exists and is functional.
 ### Adding More Backends
 
 To add another backend after initial setup, run the same
-script again with new `--add-backend` details:
+script again with new `--add_backend` details:
 
 ```bash
-bash agent/install_mcp.sh --add-backend prod-tee HOST PORT \
+bash agent/install_mcp.sh --add_backend prod-tee HOST PORT \
     --verifier ita \
     --digest "sha256:ACTUAL_DIGEST" \
-    --no-debug-tee \
-    --set-default
+    --no_debug_tee \
+    --set_default
 ```
 
 The venv and registration steps will be skipped if already
@@ -67,30 +67,30 @@ done. Only the new backend entry is added.
 
 ```bash
 # Development TEE (no attestation):
-bash agent/install_mcp.sh --add-backend my-tee HOST PORT \
-    --set-default
+bash agent/install_mcp.sh --add_backend my-tee HOST PORT \
+    --set_default
 
 # With admission control (creator token):
-bash agent/install_mcp.sh --add-backend my-tee HOST PORT \
-    --creator-token TOKEN --set-default
+bash agent/install_mcp.sh --add_backend my-tee HOST PORT \
+    --creator_token TOKEN --set_default
 
 # Production GCP Confidential Space TEE:
-bash agent/install_mcp.sh --add-backend prod-tee HOST PORT \
+bash agent/install_mcp.sh --add_backend prod-tee HOST PORT \
     --verifier ita \
     --digest "sha256:ACTUAL_DIGEST" \
-    --no-debug-tee \
-    --set-default
+    --no_debug_tee \
+    --set_default
 ```
 
 #### Options
 
 - `--verifier TYPE` — `noop` (default, no attestation) or `ita`
 - `--digest DIGEST` — Expected container image digest
-- `--allow-debug-tee` — Accept debug TEE (default)
-- `--no-debug-tee` — Reject debug TEE (for production)
-- `--creator-token TOKEN` — Pre-shared token for admission control
-- `--set-default` — Make this the default backend
-- `--do-not-register` — Skip `mcp_config.json` registration
+- `--allow_debug_tee` — Accept debug TEE (default)
+- `--no_debug_tee` — Reject debug TEE (for production)
+- `--creator_token TOKEN` — Pre-shared token for admission control
+- `--set_default` — Make this the default backend
+- `--do_not_register` — Skip `mcp_config.json` registration
   (use when the default registration path doesn't apply)
 
 ### Manual JSON Edit
@@ -548,7 +548,7 @@ to Q3-JOINER.
    pay attention to detail, and check your conversation history for context.
    You may have misunderstood the protocol or forgotten where you are in it.
 5. **Setting `expected_digest: ""`** — empty string ≠ omitting the
-   field. Omit it entirely or use `--allow-debug-tee`.
+   field. Omit it entirely or use `--allow_debug_tee`.
 6. **Skipping `submit_input`** — the session will time out and ABORT.
    Both CREATOR and JOINER must submit.
 7. **Creating a new session** when a session is underway for the same task.
@@ -556,6 +556,6 @@ to Q3-JOINER.
 8. **`PERMISSION_DENIED` on `ztab_create_session`** — the TEE server
    requires a `creator_token` but your `backends.json` does not have
    one configured for this backend. Fix: re-run
-   `install_mcp.sh --creator-token TOKEN` or manually add
+   `install_mcp.sh --creator_token TOKEN` or manually add
    `"creator_token": "TOKEN"` to the backend entry in
    `~/.ztab/backends.json`.

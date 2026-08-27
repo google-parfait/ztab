@@ -58,6 +58,7 @@ sys.path.insert(0, PB2_DIR)
 import grpc
 from client import ZtabChannel
 from verifier_factory import get_verifier
+from cli import _build_policy
 import session_manager_pb2 as pb2
 import session_manager_pb2_grpc as pb2_grpc
 
@@ -87,8 +88,8 @@ def run_prompt_test(scenario, test_case, args):
         print("=" * 60)
 
     # Send via Echo RPC.
-    verifier = get_verifier(args.verifier, args.expected_digest,
-                            args.allow_debug_tee)
+    policy = _build_policy(args)
+    verifier = get_verifier(policy)
 
     with ZtabChannel(args.host, args.port, verifier) as channel:
         stub = pb2_grpc.AgentBrokerServiceStub(channel.grpc_channel)
@@ -143,6 +144,15 @@ def main():
     parser.add_argument(
         "--allow_debug_tee", action="store_true", default=True,
         help="Allow debug TEE")
+    parser.add_argument(
+        "--expected_project_id", default=None,
+        help="Expected GCP project ID")
+    parser.add_argument(
+        "--expected_service_account", default=None,
+        help="Expected GCP service account")
+    parser.add_argument(
+        "--min_cs_version", type=int, default=None,
+        help="Minimum CS version")
     parser.add_argument(
         "--allow_subset", action="store_true", default=False,
         help="Accept subset matches as passing")

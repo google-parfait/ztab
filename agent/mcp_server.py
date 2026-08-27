@@ -325,6 +325,11 @@ def decode_jwt_payload(token: str) -> dict | None:
 
 
 from verifier_factory import get_verifier as _get_verifier
+from verifier_policy import (
+    ItaPolicy,
+    NoopPolicy,
+    VerifierPolicy,
+)
 
 
 # --- Channel Cache ---
@@ -335,11 +340,54 @@ from verifier_factory import get_verifier as _get_verifier
 _CHANNEL_CACHE = {}  # backend_id -> (ZtabChannel, stub)
 
 
-def _get_stub(host, port, verifier_name, expected_digest=None, allow_debug=False):
-    """Create a connected gRPC stub (uncached — use _get_cached_stub instead)."""
-    verifier = _get_verifier(
-        verifier_name, expected_digest, allow_debug
+def _build_policy_from_backend(
+    backend: dict,
+) -> VerifierPolicy:
+    """Construct a VerifierPolicy from a backends.json entry."""
+    verifier_name = backend.get("verifier", "")
+    if verifier_name == "noop":
+        return NoopPolicy()
+
+    # Default to ITA.
+    digest_val = backend.get(
+        "expected_digest", ""
     )
+    if isinstance(digest_val, list):
+        digests = frozenset(digest_val)
+    elif digest_val:
+        digests = frozenset([digest_val])
+    else:
+        digests = frozenset()
+
+    kwargs = {
+        "expected_image_digests": digests,
+        "allow_debug": backend.get(
+            "allow_debug_tee", False
+        ),
+        "allow_memory_monitoring": backend.get(
+            "allow_memory_monitoring", False
+        ),
+        "expected_project_id": backend.get(
+            "expected_project_id", ""
+        ),
+        "expected_service_account": backend.get(
+            "expected_service_account", ""
+        ),
+    }
+
+    digest = backend.get("expected_image_digest")
+    if digest:
+        kwargs["expected_image_digests"] = frozenset([digest])
+
+    min_cs = backend.get("min_cs_version")
+    if min_cs not in (None, ""):
+        kwargs["min_cs_version"] = int(min_cs)
+    return ItaPolicy(**kwargs)
+
+
+def _get_stub(host, port, policy):
+    """Create a connected gRPC stub (uncached — use _get_cached_stub instead)."""
+    verifier = _get_verifier(policy)
     channel_wrapper = ZtabChannel(
         host=host,
         port=port,
@@ -361,14 +409,12 @@ def _get_cached_stub(arguments):
     bid = backend["backend_id"]
 
     if bid not in _CHANNEL_CACHE:
-        conn_args = {
-            "host": backend.get("host", "localhost"),
-            "port": int(backend.get("port", 8000)),
-            "verifier_name": backend["verifier"],
-            "expected_digest": backend.get("expected_digest"),
-            "allow_debug": backend.get("allow_debug_tee", False),
-        }
-        channel, stub = _get_stub(**conn_args)
+        policy = _build_policy_from_backend(backend)
+        channel, stub = _get_stub(
+            host=backend.get("host", "localhost"),
+            port=int(backend.get("port", 8000)),
+            policy=policy,
+        )
         _CHANNEL_CACHE[bid] = (channel, stub)
         print(f"[ztab] Channel created for backend '{bid}'", file=sys.stderr)
 
@@ -393,18 +439,18 @@ def _evict_backend(arguments):
 def _common_args(arguments):
     """Extract connection args by resolving the backend from the config file.
 
-    Note: The old _resolve_allow_debug() env-var gate was removed because
-    allow_debug_tee now comes from the trusted config file, not from
-    agent-supplied tool arguments. The config file IS the trust boundary;
-    the agent cannot override it at runtime.
+    Returns a dict with 'host', 'port', and 'policy'
+    (a VerifierPolicy instance).
     """
-    backend = _get_backend_info(arguments.get("backend"))
+    backend = _get_backend_info(
+        arguments.get("backend")
+    )
     return {
         "host": backend.get("host", "localhost"),
         "port": int(backend.get("port", 8000)),
-        "verifier_name": backend["verifier"],
-        "expected_digest": backend.get("expected_digest"),
-        "allow_debug": backend.get("allow_debug_tee", False),
+        "policy": _build_policy_from_backend(
+            backend
+        ),
     }
 
 def run_list_backends(_arguments):
@@ -430,15 +476,16 @@ def run_list_backends(_arguments):
     }
 
 
-def run_connectivity_test(host, port, message, verifier_name,
-                         expected_digest=None, allow_debug=False):
+def run_connectivity_test(
+    host, port, message, policy,
+):
     """Connects to server, extracts attestation, runs Echo RPC.
 
     Note: This function intentionally does NOT use the channel cache because
     it is a diagnostic tool — the user expects it to perform a fresh TLS
     handshake and attestation every time it is called.
     """
-    channel_wrapper, stub = _get_stub(host, port, verifier_name, expected_digest, allow_debug)
+    channel_wrapper, stub = _get_stub(host, port, policy)
     try:
         request = session_manager_pb2.EchoRequest(message=message)
         response = stub.Echo(request)

@@ -284,8 +284,8 @@ full analysis).
 | **MCP Server** | Python | `agent/mcp_server.py` | Stdio-based MCP server exposing ZTAB tools. Named backend resolution, channel caching, lazy config reloading. |
 | **CLI** | Python | `agent/cli.py` | Standalone command-line tool for all session RPCs. |
 | **Attestation Utils** | Python | `agent/attestation.py` | Extracts attestation tokens from X.509 certificate extensions (OID parsing, ASN.1 unwrapping). |
-| **ITA Verifier** | Python | `agent/ita_verifier.py` | Full Intel Trust Authority JWT verification: signature, claims, key-binding, container digest. |
-| **Verifier Factory** | Python | `agent/verifier_factory.py` | Factory for selecting verifier by name (`noop` or `ita`). |
+| **ITA Verifier** | Python | `agent/ita_verifier.py` | Full Intel Trust Authority JWT verification: signature, claims, key-binding, `swname`, `cvm_compliance_status`, and container digest. |
+| **Verifier Factory** | Python | `agent/verifier_factory.py` | Factory that validates a `VerifierPolicy` (`ItaPolicy`, `NoopPolicy`) and returns the configured verifier callable. |
 | **GCP Deployment** | Shell/Bzl | `gcp/` | Scripts and Bazel macros for building, pushing, and launching on GCP Confidential Space. |
 
 ## 3. Security Architecture
@@ -402,7 +402,7 @@ certificate.
    - Issuer (`iss`)
    - Audience (`aud`)
    - Expiration (`exp`, `nbf`)
-   - Hardware model (`hwmodel` ∈ {`GCP_INTEL_TDX`, `INTEL_TDX`})
+   - Hardware model (`hwmodel == INTEL_TDX`)
    - Secure boot (`secboot == true`)
    - Debug status (`dbgstat ∈ {disabled, disabled-since-boot}`).
      When `allow_debug_tee` is set in the backend configuration,
@@ -446,9 +446,12 @@ TLS Keying Material Export (RFC 5705) for full channel binding.
 > obtain a valid attestation token — the client cannot
 > distinguish the legitimate ZTAB server from a malicious
 > workload. Callers **must** provide an `expected_image_digest`
-> when creating the ITA verifier for production use. Omitting
+> when creating the `ItaPolicy` for production use. Omitting
 > the digest check is only appropriate for local development
-> and testing.
+> and testing. For full Cloud Foundation Core (CFC) parity,
+> callers should also specify `--expected_project_id` and
+> `--expected_service_account` to strongly bind the workload
+> identity to a known deployment.
 
 ### 3.3 Attestation Providers
 
@@ -1108,12 +1111,12 @@ Backends security boundary specifically protects against
 LLM to connect to an attacker-controlled server.
 
 **Programmatic configuration:** The `install_mcp.sh` installer script
-accepts `--add-backend` flags as a convenience alternative to
+accepts `--add_backend` flags as a convenience alternative to
 manually editing `backends.json`. This allows automated setup scripts
 and agent bootstrapping flows to register backends without requiring
 JSON file manipulation.
 
-The installer also accepts `--creator-token TOKEN` to configure
+The installer also accepts `--creator_token TOKEN` to configure
 admission control credentials for token-gated servers.
 
 **Empty digest wildcard:** Setting `expected_digest` to an empty

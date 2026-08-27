@@ -13,13 +13,24 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-"""Unit tests for ITA verifier and verifier factory."""
+"""Unit tests for ITA verifier, verifier factory, and policy classes."""
 
+import copy
 import datetime
 import os
 import sys
+import time
 import unittest
 from unittest import mock
+
+# Setup python path to import agent modules.
+_SCRIPT_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+_ZTAB_ROOT = os.path.dirname(_SCRIPT_DIR)
+_AGENT_DIR = os.path.join(_ZTAB_ROOT, "agent")
+sys.path.insert(0, _ZTAB_ROOT)
+sys.path.insert(0, _AGENT_DIR)
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -29,21 +40,30 @@ from cryptography.hazmat.primitives import serialization
 
 from agent import ita_verifier
 from agent import verifier_factory
-from agent.client import noop_verifier
+
+from agent.verifier_policy import (
+    ItaPolicy,
+    NoopPolicy,
+    VerifierPolicy,
+)
 
 
 def _make_self_signed_ec_cert_pem() -> bytes:
-    """Create a self-signed EC certificate and return PEM."""
+    """Create a self-signed EC cert and return PEM."""
     key = ec.generate_private_key(ec.SECP256R1())
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "test"),
+        x509.NameAttribute(
+            NameOID.COMMON_NAME, "test"
+        ),
     ])
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer)
         .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
+        .serial_number(
+            x509.random_serial_number()
+        )
         .not_valid_before(
             datetime.datetime.utcnow()
         )
@@ -53,41 +73,61 @@ def _make_self_signed_ec_cert_pem() -> bytes:
         )
         .sign(key, hashes.SHA256())
     )
-    return cert.public_bytes(serialization.Encoding.PEM)
+    return cert.public_bytes(
+        serialization.Encoding.PEM
+    )
 
 
-# -- Good claims template for ITA verifier tests. --
+# Default ITA policy used by most tests.
+_DEFAULT_POLICY = ItaPolicy(
+    expected_image_digests=frozenset(
+        ["sha256:abc123testdigest"]
+    ),
+)
+
+# Good claims template matching ALL unconditional
+# constants (ITA issuer, INTEL_TDX, secboot=True,
+# CONFIDENTIAL_SPACE, gcp_compliant_cvm) plus a
+# valid swversion >= 260500.
 _GOOD_CLAIMS = {
-    "iss": "https://portal.trustauthority.intel.com",
-    "aud": "ztab_tls",
-    "hwmodel": "GCP_INTEL_TDX",
+    "iss": ita_verifier.ITA_ISSUER,
+    "aud": ita_verifier.EXPECTED_AUDIENCE,
+    "hwmodel": ita_verifier.EXPECTED_HWMODEL,
     "secboot": True,
     "dbgstat": "disabled-since-boot",
     "eat_nonce": "expected-nonce",
+    "swname": ita_verifier.EXPECTED_SWNAME,
+    "swversion": ["260500"],
     "submods": {
         "container": {
-            "image_digest": "sha256:abc123testdigest",
+            "image_digest": (
+                "sha256:abc123testdigest"
+            ),
         },
+        "confidential_space": {
+            "support_attributes": [],
+            "monitoring_enabled": {
+                "memory": False,
+            },
+        },
+    },
+    "tdx": {
+        "cvm_compliance_status": (
+            ita_verifier.EXPECTED_CVM_COMPLIANCE
+        ),
     },
 }
 
 
 def _claims(**overrides):
-    """Return a copy of _GOOD_CLAIMS with overrides."""
-    c = dict(_GOOD_CLAIMS)
+    """Return a deep copy of _GOOD_CLAIMS with overrides."""
+    c = copy.deepcopy(_GOOD_CLAIMS)
     c.update(overrides)
     return c
 
 
 def _patch_jwt_and_jwks(claims_dict):
-    """Return a stack of patches for JWT / JWKS mocks.
-
-    The returned patches mock out:
-      - _fetch_jwks  -> {'keys': [...]}
-      - jwt.get_unverified_header -> {'kid':'k1','alg':'RS256'}
-      - jwt.PyJWKSet.from_dict -> keyset with key_id='k1'
-      - jwt.decode -> claims_dict
-    """
+    """Return patches for JWT / JWKS mocks."""
     mock_key = mock.MagicMock()
     mock_key.key_id = "k1"
     mock_key.key = "fake-key"
@@ -95,15 +135,20 @@ def _patch_jwt_and_jwks(claims_dict):
     mock_keyset = mock.MagicMock()
     mock_keyset.keys = [mock_key]
 
-    patches = [
+    return [
         mock.patch.object(
             ita_verifier,
             "_fetch_jwks",
-            return_value={"keys": [{"kid": "k1"}]},
+            return_value={
+                "keys": [{"kid": "k1"}]
+            },
         ),
         mock.patch(
             "jwt.get_unverified_header",
-            return_value={"kid": "k1", "alg": "RS256"},
+            return_value={
+                "kid": "k1",
+                "alg": "RS256",
+            },
         ),
         mock.patch(
             "jwt.PyJWKSet.from_dict",
@@ -114,61 +159,80 @@ def _patch_jwt_and_jwks(claims_dict):
             return_value=claims_dict,
         ),
     ]
-    return patches
+
+
+# ─── Helper Tests ────────────────────────────────────
 
 
 class Base64HelperTest(unittest.TestCase):
-    """Tests for base64url encoding/decoding helpers."""
 
     def test_base64url_decode_nopad(self):
-        result = ita_verifier._base64url_decode("SGVsbG8")
+        result = ita_verifier._base64url_decode(
+            "SGVsbG8"
+        )
         self.assertEqual(result, b"Hello")
 
     def test_base64url_encode_nopad(self):
-        result = ita_verifier._base64url_encode_nopad(
-            b"Hello"
+        result = (
+            ita_verifier._base64url_encode_nopad(
+                b"Hello"
+            )
         )
         self.assertEqual(result, "SGVsbG8")
 
 
 class PubkeyHashTest(unittest.TestCase):
-    """Tests for _compute_pubkey_hash_b64url."""
 
     def test_compute_pubkey_hash_b64url(self):
         cert_pem = _make_self_signed_ec_cert_pem()
-        h = ita_verifier._compute_pubkey_hash_b64url(
-            cert_pem
+        h = (
+            ita_verifier
+            ._compute_pubkey_hash_b64url(cert_pem)
         )
         self.assertIsInstance(h, str)
         self.assertTrue(len(h) > 0)
-        # Base64url without padding: no '=' chars.
         self.assertNotIn("=", h)
 
 
-class ItaVerifierClaimTest(unittest.TestCase):
-    """Tests for ITA verifier claim validation logic.
+# ─── ITA Verifier Claim Tests ────────────────────────
 
-    Each test creates a verifier via create_ita_verifier,
-    then patches JWT/JWKS so only the claim-checking code
-    path under test executes.
+
+class ItaVerifierClaimTest(unittest.TestCase):
+    """Tests for ITA verifier claim validation.
+
+    Each test patches JWT/JWKS so only the
+    claim-checking code path under test executes.
     """
 
-    def _run_verifier(self, claims_dict, **kwargs):
+    def _run(
+        self,
+        claims_dict,
+        policy=None,
+        extra_patches=None,
+    ):
         """Build verifier, apply patches, call it."""
-        # Reset JWKS cache between tests.
         ita_verifier._JWKS_CACHE["data"] = None
         ita_verifier._JWKS_CACHE["timestamp"] = 0
 
-        extra_patches = kwargs.pop(
-            "extra_patches", []
-        )
-        kwargs.setdefault(
-            "expected_image_digest", "sha256:abc123testdigest"
-        )
+        if policy is None:
+            policy = _DEFAULT_POLICY
+        if extra_patches is None:
+            extra_patches = []
+
         verifier = ita_verifier.create_ita_verifier(
-            **kwargs
+            policy
         )
         patches = _patch_jwt_and_jwks(claims_dict)
+        # Default: mock cert→nonce so tests that
+        # reach key-binding don't crash on the
+        # dummy b"cert-pem" bytestring.
+        patches.append(
+            mock.patch.object(
+                ita_verifier,
+                "_compute_pubkey_hash_b64url",
+                return_value="expected-nonce",
+            )
+        )
         patches.extend(extra_patches)
 
         for p in patches:
@@ -179,86 +243,412 @@ class ItaVerifierClaimTest(unittest.TestCase):
             for p in patches:
                 p.stop()
 
-    def test_ita_verifier_rejects_bad_issuer(self):
-        result = self._run_verifier(
-            _claims(iss="https://evil.com")
-        )
-        self.assertFalse(result)
+    # --- Unconditional checks ---
 
-    def test_ita_verifier_rejects_bad_hwmodel(self):
-        result = self._run_verifier(
-            _claims(hwmodel="INVALID")
+    def test_rejects_bad_issuer(self):
+        self.assertFalse(
+            self._run(
+                _claims(iss="https://evil.com")
+            )
         )
-        self.assertFalse(result)
 
-    def test_ita_verifier_rejects_debug_enabled(self):
-        result = self._run_verifier(
-            _claims(dbgstat="enabled"),
-            require_debug_disabled=True,
+    def test_rejects_gca_issuer(self):
+        """GCA issuer is rejected by ITA verifier."""
+        self.assertFalse(
+            self._run(
+                _claims(
+                    iss=ita_verifier.GCA_ISSUER
+                )
+            )
         )
-        self.assertFalse(result)
 
-    def test_ita_verifier_rejects_nonce_mismatch(self):
+    def test_rejects_wrong_hwmodel(self):
+        self.assertFalse(
+            self._run(
+                _claims(hwmodel="INVALID")
+            )
+        )
+
+    def test_rejects_gcp_intel_tdx_hwmodel(self):
+        """GCP_INTEL_TDX is rejected (ITA uses INTEL_TDX)."""
+        self.assertFalse(
+            self._run(
+                _claims(hwmodel="GCP_INTEL_TDX")
+            )
+        )
+
+    def test_rejects_secboot_false(self):
+        """secboot=False is always rejected."""
+        self.assertFalse(
+            self._run(_claims(secboot=False))
+        )
+
+    def test_rejects_bad_swname(self):
+        claims = _claims()
+        claims["swname"] = "WRONG"
+        self.assertFalse(self._run(claims))
+
+    def test_rejects_bad_cvm_compliance(self):
+        claims = _claims()
+        claims["tdx"][
+            "cvm_compliance_status"
+        ] = "non_compliant"
+        self.assertFalse(self._run(claims))
+
+    # --- Debug gating ---
+
+    def test_rejects_debug_enabled(self):
+        self.assertFalse(
+            self._run(
+                _claims(dbgstat="enabled")
+            )
+        )
+
+    def test_rejects_debug_support_attr(self):
+        claims = _claims()
+        claims["submods"]["confidential_space"][
+            "support_attributes"
+        ] = ["DEBUG"]
+        self.assertFalse(self._run(claims))
+
+    def test_allows_debug_when_policy_permits(self):
+        claims = _claims(dbgstat="enabled")
+        claims["submods"]["confidential_space"][
+            "support_attributes"
+        ] = ["DEBUG"]
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc123testdigest"]
+            ),
+            allow_debug=True,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"ZTAB_TEST_ENVIRONMENT": "1"},
+        ):
+            self.assertTrue(
+                self._run(claims, policy=policy)
+            )
+
+    # --- Memory monitoring ---
+
+    def test_rejects_memory_monitoring(self):
+        claims = _claims()
+        claims["submods"]["confidential_space"][
+            "monitoring_enabled"
+        ]["memory"] = True
+        self.assertFalse(self._run(claims))
+
+    def test_allows_memory_monitoring_when_permitted(
+        self,
+    ):
+        claims = _claims()
+        claims["submods"]["confidential_space"][
+            "monitoring_enabled"
+        ]["memory"] = True
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc123testdigest"]
+            ),
+            allow_memory_monitoring=True,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"ZTAB_TEST_ENVIRONMENT": "1"},
+        ):
+            self.assertTrue(
+                self._run(claims, policy=policy)
+            )
+
+    # --- Key binding ---
+
+    def test_rejects_nonce_mismatch(self):
         nonce_mock = mock.patch.object(
             ita_verifier,
             "_compute_pubkey_hash_b64url",
             return_value="expected-nonce",
         )
-        result = self._run_verifier(
-            _claims(eat_nonce="wrong"),
-            extra_patches=[nonce_mock],
+        self.assertFalse(
+            self._run(
+                _claims(eat_nonce="wrong"),
+                extra_patches=[nonce_mock],
+            )
         )
-        self.assertFalse(result)
+
+    # --- Container identity ---
+
+    def test_multiple_digests_accepted(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset([
+                "sha256:abc123testdigest",
+                "sha256:other",
+            ]),
+        )
+        self.assertTrue(
+            self._run(_claims(), policy=policy)
+        )
+
+    def test_digest_mismatch(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset([
+                "sha256:aaa",
+            ]),
+        )
+        self.assertFalse(
+            self._run(_claims(), policy=policy)
+        )
+
+    def test_project_id_mismatch(self):
+        claims = _claims()
+        claims["submods"]["gce"] = {
+            "project_id": "wrong"
+        }
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc123testdigest"]
+            ),
+            expected_project_id="correct",
+        )
+        self.assertFalse(
+            self._run(claims, policy=policy)
+        )
+
+    def test_project_id_empty_skipped(self):
+        """Empty expected_project_id skips check."""
+        self.assertTrue(self._run(_claims()))
+
+    def test_service_account_mismatch(self):
+        claims = _claims()
+        claims["google_service_accounts"] = [
+            "wrong@proj.iam.gserviceaccount.com"
+        ]
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc123testdigest"]
+            ),
+            expected_service_account=(
+                "correct@proj.iam.gserviceaccount.com"
+            ),
+        )
+        self.assertFalse(
+            self._run(claims, policy=policy)
+        )
+
+    def test_service_account_match(self):
+        """Matching service account passes."""
+        sa = "correct@proj.iam.gserviceaccount.com"
+        claims = _claims()
+        claims["google_service_accounts"] = [sa]
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc123testdigest"]
+            ),
+            expected_service_account=sa,
+        )
+        self.assertTrue(
+            self._run(claims, policy=policy)
+        )
+
+    # --- swversion ---
+
+    def test_swversion_below_minimum(self):
+        claims = _claims()
+        claims["swversion"] = ["200000"]
+        self.assertFalse(self._run(claims))
+
+    def test_swversion_missing_rejected(self):
+        claims = _claims()
+        claims["swversion"] = []
+        self.assertFalse(self._run(claims))
+
+    def test_swversion_below_custom_minimum(self):
+        """Custom min_cs_version rejects lower version."""
+        claims = _claims()
+        claims["swversion"] = ["260500"]
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc123testdigest"]
+            ),
+            min_cs_version=300000,
+        )
+        self.assertFalse(
+            self._run(claims, policy=policy)
+        )
+
+
+# ─── Policy Validation Tests ────────────────────────
+
+
+class PolicyValidationTest(unittest.TestCase):
+
+    def test_noop_blocked_outside_test_env(self):
+        policy = NoopPolicy()
+        with mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            with self.assertRaises(RuntimeError):
+                policy.validate()
+
+    def test_noop_allowed_in_test_env(self):
+        policy = NoopPolicy()
+        with mock.patch.dict(
+            os.environ,
+            {"ZTAB_TEST_ENVIRONMENT": "1"},
+        ):
+            policy.validate()  # no exception
+
+    def test_ita_empty_digests_raises(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(),
+        )
+        with self.assertRaises(ValueError):
+            policy.validate()
+
+    def test_ita_zero_min_cs_version_raises(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc"]
+            ),
+            min_cs_version=0,
+        )
+        with self.assertRaises(ValueError):
+            policy.validate()
+
+    def test_allow_debug_blocked_outside_test(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc"]
+            ),
+            allow_debug=True,
+        )
+        with mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            with self.assertRaises(RuntimeError):
+                policy.validate()
+
+    def test_allow_debug_ok_in_test(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc"]
+            ),
+            allow_debug=True,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"ZTAB_TEST_ENVIRONMENT": "1"},
+        ):
+            policy.validate()  # no exception
+
+    def test_allow_memory_mon_blocked(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc"]
+            ),
+            allow_memory_monitoring=True,
+        )
+        with mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            with self.assertRaises(RuntimeError):
+                policy.validate()
+
+
+# ─── Policy Serialization Tests ──────────────────────
+
+
+class PolicySerializationTest(unittest.TestCase):
+
+    def test_ita_roundtrip(self):
+        policy = ItaPolicy(
+            expected_image_digests=frozenset(
+                ["sha256:abc", "sha256:def"]
+            ),
+            expected_project_id="my-proj",
+            allow_debug=True,
+            min_cs_version=270000,
+        )
+        d = policy.to_dict()
+        restored = VerifierPolicy.from_dict(d)
+        self.assertIsInstance(restored, ItaPolicy)
+        self.assertEqual(
+            restored.expected_image_digests,
+            policy.expected_image_digests,
+        )
+        self.assertEqual(
+            restored.expected_project_id, "my-proj"
+        )
+        self.assertTrue(restored.allow_debug)
+        self.assertEqual(
+            restored.min_cs_version, 270000
+        )
+
+    def test_noop_roundtrip(self):
+        policy = NoopPolicy()
+        d = policy.to_dict()
+        restored = VerifierPolicy.from_dict(d)
+        self.assertIsInstance(restored, NoopPolicy)
+
+    def test_unknown_type_raises(self):
+        with self.assertRaises(ValueError):
+            VerifierPolicy.from_dict(
+                {"verifier_type": "unknown"}
+            )
+
+
+# ─── Factory Tests ───────────────────────────────────
 
 
 class VerifierFactoryTest(unittest.TestCase):
-    """Tests for verifier_factory.get_verifier."""
 
-    def test_get_verifier_noop_without_test_env_raises(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(RuntimeError) as ctx:
-                verifier_factory.get_verifier("noop")
-            self.assertIn("strictly forbidden", str(ctx.exception))
+    def test_noop_without_test_env(self):
+        policy = NoopPolicy()
+        with mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            with self.assertRaises(RuntimeError):
+                verifier_factory.get_verifier(policy)
 
-    def test_get_verifier_noop_with_test_env(self):
-        with mock.patch.dict(os.environ, {"ZTAB_TEST_ENVIRONMENT": "1"}):
-            v = verifier_factory.get_verifier("noop")
-            self.assertTrue(callable(v))
-            self.assertTrue(v("token", b"cert"))
+    def test_noop_with_test_env(self):
+        policy = NoopPolicy()
+        _fake_noop = lambda token, cert: True
+        with mock.patch.dict(
+            os.environ,
+            {"ZTAB_TEST_ENVIRONMENT": "1"},
+        ):
+            with mock.patch.dict(
+                "sys.modules",
+                {
+                    "client": mock.MagicMock(
+                        noop_verifier=_fake_noop
+                    ),
+                },
+            ):
+                v = verifier_factory.get_verifier(
+                    policy
+                )
+                self.assertTrue(callable(v))
+                self.assertTrue(
+                    v("token", b"cert")
+                )
 
-    def test_get_verifier_unknown_exits(self):
-        with self.assertRaises(SystemExit) as ctx:
-            verifier_factory.get_verifier("unknown")
-        self.assertEqual(ctx.exception.code, 1)
-
-    def test_get_verifier_ita_requires_digest(self):
-        """get_verifier('ita') raises ValueError if expected_digest is missing."""
-        with self.assertRaises(ValueError) as ctx:
-            verifier_factory.get_verifier("ita")
-        self.assertIn("requires an expected container image digest", str(ctx.exception))
-
-    def test_get_verifier_ita_returns_callable(self):
-        """get_verifier('ita') returns an ITA verifier callable when digest is provided."""
+    def test_ita_returns_callable(self):
         v = verifier_factory.get_verifier(
-            "ita",
-            expected_digest="sha256:abc123testdigest",
-            allow_debug=True,
+            _DEFAULT_POLICY
         )
         self.assertTrue(callable(v))
 
-import time
+
+# ─── JWKS Caching Tests ─────────────────────────────
 
 
 class JwksCachingTest(unittest.TestCase):
-    """Tests for JWKS 24-hour TTL caching."""
 
     def setUp(self):
-        """Reset JWKS cache before each test."""
         ita_verifier._JWKS_CACHE["data"] = None
         ita_verifier._JWKS_CACHE["timestamp"] = 0
 
     def tearDown(self):
-        """Reset JWKS cache after each test."""
         ita_verifier._JWKS_CACHE["data"] = None
         ita_verifier._JWKS_CACHE["timestamp"] = 0
 
@@ -268,18 +658,18 @@ class JwksCachingTest(unittest.TestCase):
         return_value="expected-nonce",
     )
     @mock.patch.object(
-        ita_verifier, "_fetch_jwks",
+        ita_verifier,
+        "_fetch_jwks",
         return_value={"keys": [{"kid": "k1"}]},
     )
     @mock.patch("agent.ita_verifier.time.time")
-    def test_jwks_cache_hit_within_ttl(
+    def test_cache_hit_within_ttl(
         self, mock_time, mock_fetch, mock_nonce
     ):
         """Cached JWKS within TTL skips HTTP fetch."""
         now = 1000000.0
         cached_keys = {"keys": [{"kid": "k1"}]}
 
-        # Pre-populate cache 100 seconds ago.
         ita_verifier._JWKS_CACHE["data"] = (
             cached_keys
         )
@@ -288,13 +678,9 @@ class JwksCachingTest(unittest.TestCase):
         )
         mock_time.return_value = now
 
-        # Build verifier and call it. The internal
-        # get_jwks() should use the cache, not fetch.
         patches = _patch_jwt_and_jwks(
             _claims(eat_nonce="expected-nonce")
         )
-        # Remove _fetch_jwks patch from helper since
-        # we already patched it above.
         patches = [
             p for p in patches
             if "_fetch_jwks" not in str(p)
@@ -304,16 +690,14 @@ class JwksCachingTest(unittest.TestCase):
         try:
             verifier = (
                 ita_verifier.create_ita_verifier(
-                    expected_image_digest="sha256:abc123testdigest",
+                    _DEFAULT_POLICY,
                 )
             )
-            result = verifier("tok", b"cert")
+            verifier("tok", b"cert")
         finally:
             for p in patches:
                 p.stop()
 
-        # _fetch_jwks should NOT be called because
-        # cache is fresh.
         mock_fetch.assert_not_called()
 
     @mock.patch.object(
@@ -322,18 +706,18 @@ class JwksCachingTest(unittest.TestCase):
         return_value="expected-nonce",
     )
     @mock.patch.object(
-        ita_verifier, "_fetch_jwks",
+        ita_verifier,
+        "_fetch_jwks",
         return_value={"keys": [{"kid": "k1"}]},
     )
     @mock.patch("agent.ita_verifier.time.time")
-    def test_jwks_cache_miss_after_ttl(
+    def test_cache_miss_after_ttl(
         self, mock_time, mock_fetch, mock_nonce
     ):
         """Expired JWKS cache triggers HTTP fetch."""
         now = 1000000.0
         stale_keys = {"keys": [{"kid": "old"}]}
 
-        # Cache expired > 86400 seconds ago.
         ita_verifier._JWKS_CACHE["data"] = (
             stale_keys
         )
@@ -342,7 +726,6 @@ class JwksCachingTest(unittest.TestCase):
         )
         mock_time.return_value = now
 
-        # Build and call verifier.
         mock_key = mock.MagicMock()
         mock_key.key_id = "k1"
         mock_key.key = "fake-key"
@@ -373,7 +756,7 @@ class JwksCachingTest(unittest.TestCase):
         try:
             verifier = (
                 ita_verifier.create_ita_verifier(
-                    expected_image_digest="sha256:abc123testdigest",
+                    _DEFAULT_POLICY,
                 )
             )
             verifier("tok", b"cert")
@@ -381,13 +764,10 @@ class JwksCachingTest(unittest.TestCase):
             for p in patches:
                 p.stop()
 
-        # _fetch_jwks SHOULD be called because TTL
-        # expired.
         mock_fetch.assert_called()
 
 
 class KeyRotationTest(unittest.TestCase):
-    """Test JWKS key rotation triggers refetch."""
 
     def setUp(self):
         ita_verifier._JWKS_CACHE["data"] = None
@@ -408,7 +788,8 @@ class KeyRotationTest(unittest.TestCase):
     @mock.patch(
         "jwt.get_unverified_header",
         return_value={
-            "kid": "k2", "alg": "RS256"
+            "kid": "k2",
+            "alg": "RS256",
         },
     )
     @mock.patch("jwt.decode")
@@ -422,20 +803,19 @@ class KeyRotationTest(unittest.TestCase):
         mock_nonce,
     ):
         """Missing kid triggers JWKS refetch."""
-        # First fetch: keys without k2.
         mock_key1 = mock.MagicMock()
         mock_key1.key_id = "k1"
         mock_key1.key = "fake-key-1"
         keyset_no_k2 = mock.MagicMock()
         keyset_no_k2.keys = [mock_key1]
 
-        # Second fetch: keys with k2.
         mock_key2 = mock.MagicMock()
         mock_key2.key_id = "k2"
         mock_key2.key = "fake-key-2"
         keyset_with_k2 = mock.MagicMock()
         keyset_with_k2.keys = [
-            mock_key1, mock_key2
+            mock_key1,
+            mock_key2,
         ]
 
         mock_fetch.return_value = {
@@ -451,20 +831,17 @@ class KeyRotationTest(unittest.TestCase):
 
         verifier = (
             ita_verifier.create_ita_verifier(
-                expected_image_digest="sha256:abc123testdigest",
+                _DEFAULT_POLICY,
             )
         )
         verifier("tok", b"cert")
 
-        # _fetch_jwks called twice: initial +
-        # rotation refetch.
         self.assertEqual(
             mock_fetch.call_count, 2
         )
 
 
 class ContainerDigestTest(unittest.TestCase):
-    """Tests for container image digest check."""
 
     def setUp(self):
         ita_verifier._JWKS_CACHE["data"] = None
@@ -474,16 +851,12 @@ class ContainerDigestTest(unittest.TestCase):
         ita_verifier._JWKS_CACHE["data"] = None
         ita_verifier._JWKS_CACHE["timestamp"] = 0
 
-    def _run(self, digest_arg, actual_digest):
-        """Helper: run verifier with digest args."""
+    def test_missing_container_in_token(self):
+        """Token with empty container claim fails."""
         claims_dict = _claims(
             eat_nonce="expected-nonce",
-            submods={
-                "container": {
-                    "image_digest": actual_digest,
-                },
-            },
         )
+        claims_dict["submods"]["container"] = {}
         nonce_patch = mock.patch.object(
             ita_verifier,
             "_compute_pubkey_hash_b64url",
@@ -494,75 +867,18 @@ class ContainerDigestTest(unittest.TestCase):
 
         verifier = (
             ita_verifier.create_ita_verifier(
-                expected_image_digest=digest_arg,
+                _DEFAULT_POLICY,
             )
         )
         for p in patches:
             p.start()
         try:
-            return verifier("tok", b"cert")
+            self.assertFalse(
+                verifier("tok", b"cert")
+            )
         finally:
             for p in patches:
                 p.stop()
-
-    def test_digest_match_passes(self):
-        """Matching digest returns True."""
-        result = self._run(
-            "sha256:abc123", "sha256:abc123"
-        )
-        self.assertTrue(result)
-
-    def test_digest_mismatch_fails(self):
-        """Mismatched digest returns False."""
-        result = self._run(
-            "sha256:abc123", "sha256:wrong"
-        )
-        self.assertFalse(result)
-
-    def test_empty_digest_raises_at_verifier_creation(self):
-        """Empty expected_image_digest raises ValueError at creation time."""
-        with self.assertRaises(ValueError) as ctx:
-            ita_verifier.create_ita_verifier(
-                expected_image_digest="",
-            )
-        self.assertIn("must be a non-empty string", str(ctx.exception))
-
-    def test_none_digest_raises_at_verifier_creation(self):
-        """None expected_image_digest raises ValueError at creation time."""
-        with self.assertRaises(ValueError) as ctx:
-            ita_verifier.create_ita_verifier(
-                expected_image_digest=None,
-            )
-        self.assertIn("must be a non-empty string", str(ctx.exception))
-
-    def test_missing_container_in_token_fails(self):
-        """Token with missing container claim returns False."""
-        claims_dict = _claims(
-            eat_nonce="expected-nonce",
-            submods={},
-        )
-        nonce_patch = mock.patch.object(
-            ita_verifier,
-            "_compute_pubkey_hash_b64url",
-            return_value="expected-nonce",
-        )
-        patches = _patch_jwt_and_jwks(claims_dict)
-        patches.append(nonce_patch)
-
-        verifier = (
-            ita_verifier.create_ita_verifier(
-                expected_image_digest="sha256:abc123",
-            )
-        )
-        for p in patches:
-            p.start()
-        try:
-            result = verifier("tok", b"cert")
-        finally:
-            for p in patches:
-                p.stop()
-
-        self.assertFalse(result)
 
 
 if __name__ == "__main__":

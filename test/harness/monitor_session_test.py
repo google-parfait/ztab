@@ -121,14 +121,33 @@ def _scan_agent_for_session_metadata(agent, label, old_last_step):
   return invitation_token, creator_token
 
 
-def _connect_to_tee(tee_host, tee_port, verifier, expected_digest=None):
+def _connect_to_tee(
+    tee_host, tee_port, verifier,
+    expected_digest=None,
+    expected_project_id=None,
+    expected_service_account=None,
+    min_cs_version=None,
+):
   """Establish a gRPC channel to the TEE server.
 
   Returns (channel, stub) or raises on error.
   """
-  verifier_obj = get_verifier(
-      verifier, expected_digest=expected_digest, allow_debug=True
-  )
+  if verifier == "noop":
+    policy = NoopPolicy()
+  else:
+    digests = frozenset([expected_digest]) if expected_digest else frozenset()
+    kwargs = {
+        "expected_image_digests": digests,
+        "allow_debug": True,
+    }
+    if expected_project_id:
+        kwargs["expected_project_id"] = expected_project_id
+    if expected_service_account:
+        kwargs["expected_service_account"] = expected_service_account
+    if min_cs_version is not None:
+        kwargs["min_cs_version"] = min_cs_version
+    policy = ItaPolicy(**kwargs)
+  verifier_obj = get_verifier(policy)
   channel = ZtabChannel(host=tee_host, port=tee_port, verifier=verifier_obj)
   grpc_chan = channel.connect()
   stub = session_manager_pb2_grpc.AgentBrokerServiceStub(grpc_chan)
@@ -388,6 +407,9 @@ def monitor_agents(
     tee_port=0,
     verifier="noop",
     expected_digest=None,
+    expected_project_id=None,
+    expected_service_account=None,
+    min_cs_version=None,
 ):
   if tee_host and tee_port:
     # Set up paths and import gRPC/ZTAB packages conditionally
@@ -401,10 +423,11 @@ def monitor_agents(
     if pb2_path not in sys.path:
       sys.path.insert(0, pb2_path)
 
-    global grpc, ZtabChannel, get_verifier, session_manager_pb2, session_manager_pb2_grpc
+    global grpc, ZtabChannel, get_verifier, ItaPolicy, NoopPolicy, session_manager_pb2, session_manager_pb2_grpc
     import grpc
     from client import ZtabChannel
     from verifier_factory import get_verifier
+    from verifier_policy import ItaPolicy, NoopPolicy
     import session_manager_pb2
     import session_manager_pb2_grpc
   """Stream thoughts for all agents until all finish.
@@ -531,7 +554,13 @@ def monitor_agents(
     if tee_host and tee_port and invitation_token and creator_token:
       if tee_stub is None:
         tee_channel, tee_stub = _connect_to_tee(
-            tee_host, tee_port, verifier, expected_digest=expected_digest
+            tee_host,
+            tee_port,
+            verifier,
+            expected_digest=expected_digest,
+            expected_project_id=expected_project_id,
+            expected_service_account=expected_service_account,
+            min_cs_version=min_cs_version,
         )
 
       if tee_stub is not None:
@@ -613,7 +642,10 @@ def monitor_agents(
         label,
         run_dir,
         checked_tee=bool(tee_host and tee_port and invitation_token is not None),
-        tee_session_closed=(tee_state == session_manager_pb2.SessionState.CLOSED),
+        tee_session_closed=(
+            tee_stub is not None
+            and tee_state == session_manager_pb2.SessionState.CLOSED
+        ),
     )
 
   return results
@@ -664,6 +696,22 @@ def main():
       help="Expected container image digest for ITA verifier",
   )
   parser.add_argument(
+      "--expected_project_id",
+      default=None,
+      help="Expected GCP project ID",
+  )
+  parser.add_argument(
+      "--expected_service_account",
+      default=None,
+      help="Expected GCP service account",
+  )
+  parser.add_argument(
+      "--min_cs_version",
+      type=int,
+      default=None,
+      help="Minimum CS version",
+  )
+  parser.add_argument(
       "--timeout",
       type=int,
       default=900,
@@ -700,6 +748,9 @@ def main():
       tee_port=args.tee_port,
       verifier=args.verifier,
       expected_digest=args.expected_digest,
+      expected_project_id=args.expected_project_id,
+      expected_service_account=args.expected_service_account,
+      min_cs_version=args.min_cs_version,
   )
 
   print(f"\n{'='*50}", file=sys.stderr)

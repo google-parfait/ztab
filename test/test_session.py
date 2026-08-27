@@ -59,6 +59,7 @@ sys.path.insert(0, PB2_DIR)
 import grpc
 from client import ZtabChannel
 from verifier_factory import get_verifier
+from cli import _build_policy
 import session_manager_pb2 as pb2
 import session_manager_pb2_grpc as pb2_grpc
 
@@ -86,8 +87,8 @@ def run_test_case(scenario, test_case, args):
     """
     logging.info(f"--- Test case: {test_case.name} ---")
 
-    verifier = get_verifier(args.verifier, args.expected_digest,
-                            args.allow_debug_tee)
+    policy = _build_policy(args)
+    verifier = get_verifier(policy)
 
     inputs = test_case.inputs
     if len(inputs) != scenario.num_participants:
@@ -205,7 +206,8 @@ def run_test_case(scenario, test_case, args):
 def run_admission_control_tests(args):
     """Run wire-level admission control and idempotency tests against live TEE server."""
     logging.info("=== Running Admission Control Wire-Level Tests ===")
-    verifier = get_verifier(args.verifier, args.expected_digest, args.allow_debug_tee)
+    policy = _build_policy(args)
+    verifier = get_verifier(policy)
     passed = 0
     failed = 0
 
@@ -448,6 +450,15 @@ def main():
     parser.add_argument(
         "--allow_debug_tee", action="store_true", default=True,
         help="Allow debug TEE")
+    parser.add_argument(
+        "--expected_project_id", default=None,
+        help="Expected GCP project ID")
+    parser.add_argument(
+        "--expected_service_account", default=None,
+        help="Expected GCP service account")
+    parser.add_argument(
+        "--min_cs_version", type=int, default=None,
+        help="Minimum CS version")
     parser.add_argument(
         "--allow_subset", action="store_true", default=False,
         help="Accept subset matches as passing")

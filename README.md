@@ -126,12 +126,12 @@ flag:
 
 | Mode | Flag | Purpose | Security |
 | :--- | :--- | :--- | :--- |
-| **Production** | `--verifier ita` | Real deployments on Confidential Computing VMs (e.g., GCP with Intel TDX + H100). | Full hardware root of trust verified by Intel Trust Authority. Requires `--expected-digest` to verify container image identity. |
+| **Production** | `--verifier ita` | Real deployments on Confidential Computing VMs (e.g., GCP with Intel TDX + H100). | Full hardware root of trust verified by Intel Trust Authority. Requires `--expected_digest`. Optionally enforces `--expected_project_id` and `--expected_service_account`. Automatically enforces Intel TDX, secure boot, Confidential Space `swname`, and `gcp_compliant_cvm`. |
 | **Local development** | `--verifier noop` | Local testing without TEE hardware. | ⚠️ **No security guarantees.** Permitted ONLY when `ZTAB_TEST_ENVIRONMENT=1` is set. Must never be used in production. |
 
 The `--verifier` flag is **required** when configuring a backend
-via `install_mcp.sh --add-backend` or using `cli.py`, ensuring deployments
-always make an explicit attestation choice.
+via `install_mcp.sh --add_backend` or using `cli.py`, ensuring deployments
+always make an explicit attestation choice. The verification checks are modeled via the internal `VerifierPolicy` architecture which enforces strict CFC-parity (Cloud Foundation Core) checks on all ITA tokens.
 
 ### Semantic Leakage
 

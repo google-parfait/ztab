@@ -324,9 +324,10 @@ Read the `state` field in the response:
 - **If `SEALED`, or `CALCULATING`:**  Not done yet. Either not all
   participants have submitted their input (`SEALED`), or the system
   has not yet computed the result (`CALCULATING`).
-  → Poll, then set a 30-second timer and yield (see "How to
-  Poll and Yield" above). Be patient — this may take several
-  minutes.
+  → **DO NOT repeatedly call `ztab_get_result` in a tight loop within
+  the same turn.** Call `schedule(DurationSeconds="30", Prompt="Poll ZTAB session")`
+  and STOP calling tools this turn (see "How to Poll and Yield" above).
+  Be patient — TEE LLM inference may take several minutes.
 
 - **If `OPEN`:** You are in this step by mistake. The session has not
   yet progressed to the `SEALED` state. Not everyone joined and accepted,

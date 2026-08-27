@@ -296,16 +296,22 @@ def monitor_agent_and_find_session(
         )
         if steps_resp:
           for step in steps_resp.get("steps", []):
+            # If the tool call is still running, wait for it to complete before
+            # advancing our offset so we don't miss the completed response.
+            if step.get("status") == "CORTEX_STEP_STATUS_RUNNING":
+              break
+
             format_and_print_step(step, "Agent 1", last_seen_step)
             if thoughts_log_path:
               with open(thoughts_log_path, "a") as f:
                 f.write(json.dumps(step) + "\n")
-            # Extract invitation_token from trajectory if this is a create_session call
+            # Extract invitation_token from trajectory if this is a create_session
+            # or join_session call (searching both response and arguments as fallback).
             if not invitation_token:
               sid = extract_invitation_token(
                   step,
-                  tool_names="ztab_create_session",
-                  search_args=False,
+                  tool_names=("ztab_create_session", "ztab_join_session"),
+                  search_args=True,
                   search_response=True,
               )
               if sid:

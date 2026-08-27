@@ -745,6 +745,10 @@ def stream_agent_thoughts(
     )
     if steps_resp:
       for step in steps_resp.get("steps", []):
+        # Wait for in-flight tool steps to complete before recording and advancing.
+        if step.get("status") == "CORTEX_STEP_STATUS_RUNNING":
+          break
+
         step_idx = last_seen_step
         last_seen_step += 1
         format_and_print_step(step, label, step_idx)

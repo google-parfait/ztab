@@ -98,8 +98,8 @@ def _scan_agent_for_session_metadata(agent, label, old_last_step):
           step = json.loads(line.strip())
           sid = extract_invitation_token(
               step,
-              tool_names="ztab_create_session",
-              search_args=False,
+              tool_names=("ztab_create_session", "ztab_join_session"),
+              search_args=True,
               search_response=True,
           )
           if sid:
@@ -597,14 +597,21 @@ def monitor_agents(
             should_nudge = (tee_state is not None) and (tee_state in (
                 session_manager_pb2.SessionState.OPEN,
                 session_manager_pb2.SessionState.SEALED,
+                session_manager_pb2.SessionState.CALCULATING,
             ))
 
           if should_nudge:
-            nudge_text = (
-                "I have shared the session ID with the other participant."
-                " Please proceed with polling the session status to check when"
-                " they join."
-            )
+            if tee_state == session_manager_pb2.SessionState.CALCULATING:
+              nudge_text = (
+                  "The TEE is calculating the result. Please check ztab_get_result "
+                  "or schedule a timer to wait until the calculation completes."
+              )
+            else:
+              nudge_text = (
+                  "I have shared the session ID with the other participant."
+                  " Please proceed with polling the session status to check when"
+                  " they join."
+              )
             success = _nudge_agent_if_stalled(
                 creator_agent, creator_label, csrf_token, nudge_text
             )
@@ -615,6 +622,10 @@ def monitor_agents(
               creator_agent["timer_grace"] = IDLE_GRACE_SECS
 
     if all(a["done"] for a in agents.values()):
+      # Do not exit early if the TEE server is still actively calculating the result
+      if tee_stub is not None and tee_state == session_manager_pb2.SessionState.CALCULATING:
+        time.sleep(poll_interval)
+        continue
       break
 
     time.sleep(poll_interval)

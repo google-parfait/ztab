@@ -48,6 +48,8 @@ GROUP_NAME="ztab-server-h100-mig"
 CREATOR_TOKEN=""
 IMAGE_DIGEST=""  # sha256:... — overrides --image_tag
 DEBUG="true"
+CS_VERSION="260701"
+CS_IMAGE=""
 
 usage() {
   cat <<EOF
@@ -74,6 +76,9 @@ Optional flags:
   --template_name NAME  Override template name (default: ztab-server-h100-template).
   --group_name NAME     Override MIG group name (default: ztab-server-h100-mig).
   --debug BOOL          Use debug Confidential Space image (default: true).
+  --cs_version VERSION  Confidential Space image version (default: 260701).
+  --cs_image IMAGE      Full Confidential Space image name or resource URI.
+                        Overrides --cs_version and --debug.
 EOF
   exit 1
 }
@@ -105,6 +110,10 @@ while [[ $# -gt 0 ]]; do
     --group_name=*)   GROUP_NAME="${1#*=}"; shift ;;
     --debug)          DEBUG="true"; shift ;;
     --debug=*)        DEBUG="${1#*=}"; shift ;;
+    --cs_version)     CS_VERSION="$2"; shift 2 ;;
+    --cs_version=*)   CS_VERSION="${1#*=}"; shift ;;
+    --cs_image)       CS_IMAGE="$2"; shift 2 ;;
+    --cs_image=*)     CS_IMAGE="${1#*=}"; shift ;;
     --creator_token)  CREATOR_TOKEN="$2"; shift 2 ;;
     --creator_token=*) CREATOR_TOKEN="${1#*=}"; shift ;;
     --help|-h)        usage ;;
@@ -157,11 +166,19 @@ case "${MODE}" in
       exit 1
     fi
 
-    CS_IMAGE_NAME="confidential-space-260500"
-    if [[ "${DEBUG}" == "true" ]]; then
-      CS_IMAGE_NAME="confidential-space-debug-260500"
+    if [[ -n "${CS_IMAGE}" ]]; then
+      if [[ "${CS_IMAGE}" == projects/* ]]; then
+        OS_IMAGE="${CS_IMAGE}"
+      else
+        OS_IMAGE="projects/confidential-space-images/global/images/${CS_IMAGE}"
+      fi
+    else
+      CS_IMAGE_NAME="confidential-space-${CS_VERSION}"
+      if [[ "${DEBUG}" == "true" ]]; then
+        CS_IMAGE_NAME="confidential-space-debug-${CS_VERSION}"
+      fi
+      OS_IMAGE="projects/confidential-space-images/global/images/${CS_IMAGE_NAME}"
     fi
-    OS_IMAGE="projects/confidential-space-images/global/images/${CS_IMAGE_NAME}"
 
     # Build metadata string.
     METADATA="tee-image-reference=${IMAGE}"

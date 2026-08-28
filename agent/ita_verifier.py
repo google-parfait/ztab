@@ -40,6 +40,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from typing import Callable
@@ -124,6 +125,90 @@ def _fetch_jwks(
         len(jwks_data.get("keys", [])),
     )
     return jwks_data
+
+
+def _log_verbose_jwks_info(
+    jwks_data: dict, active_kid: str | None
+) -> None:
+    """Logs detailed JWKS information under ZTAB_TEST_ENVIRONMENT=1."""
+    keys = jwks_data.get("keys", [])
+    logger.info("  [VERBOSE] JWKS Key Inventory (%d keys):", len(keys))
+    for i, k in enumerate(keys):
+        kid = k.get("kid", "<none>")
+        alg = k.get("alg", "<none>")
+        is_match = " [ACTIVE SIGNER]" if kid == active_kid else ""
+        valid_str = ""
+        x5c = k.get("x5c", [])
+        if x5c:
+            try:
+                cert_der = base64.b64decode(x5c[0])
+                cert = x509.load_der_x509_certificate(
+                    cert_der, default_backend()
+                )
+                try:
+                    nbf = cert.not_valid_before_utc
+                    naf = cert.not_valid_after_utc
+                except AttributeError:
+                    nbf = cert.not_valid_before
+                    naf = cert.not_valid_after
+                nbf_s = (
+                    nbf.strftime("%Y-%m-%d")
+                    if hasattr(nbf, "strftime")
+                    else str(nbf)[:10]
+                )
+                naf_s = (
+                    naf.strftime("%Y-%m-%d")
+                    if hasattr(naf, "strftime")
+                    else str(naf)[:10]
+                )
+                valid_str = f", Valid: {nbf_s} -> {naf_s}"
+            except Exception:
+                valid_str = ""
+
+        logger.info(
+            "    Key %d: alg=%s%s%s",
+            i + 1,
+            alg,
+            valid_str,
+            is_match,
+        )
+        logger.info("           kid=%s", kid)
+
+
+def _log_verbose_claims_info(claims: dict) -> None:
+    """Logs detailed claims and GPU analysis under ZTAB_TEST_ENVIRONMENT=1."""
+    submods = claims.get("submods", {})
+    gpu_claims = (
+        submods.get("nvidia_gpu") if isinstance(submods, dict) else None
+    )
+    swversion = claims.get("swversion", "<none>")
+    tdx = claims.get("tdx", {})
+    cvm_status = (
+        tdx.get("cvm_compliance_status", "<none>")
+        if isinstance(tdx, dict)
+        else "<none>"
+    )
+
+    logger.info("  [VERBOSE] Claims Summary:")
+    logger.info("    - CS Image Version: %s", swversion)
+    if gpu_claims:
+        logger.info(
+            "    - GPU Claims: PRESENT (%s)",
+            json.dumps(gpu_claims),
+        )
+    else:
+        logger.info(
+            "    - GPU Claims: None present "
+            "(submods.nvidia_gpu not populated)"
+        )
+    logger.info(
+        "    - HW Model: %s", claims.get("hwmodel", "<none>")
+    )
+    logger.info("    - CVM Compliance: %s", cvm_status)
+
+    logger.info("  [VERBOSE] Full Token Claims JSON:")
+    logger.info(json.dumps(claims, indent=2))
+
 
 
 def _extract_pubkey_from_cert(
@@ -504,6 +589,11 @@ def create_ita_verifier(
                 )
                 return False
 
+            if os.environ.get("ZTAB_TEST_ENVIRONMENT") == "1":
+                _log_verbose_jwks_info(jwks_data, kid)
+                logger.info("  [VERBOSE] Token header:")
+                logger.info(json.dumps(header, indent=2))
+
             matching_key = None
             for key in signing_keys.keys:
                 if key.key_id == kid:
@@ -542,6 +632,9 @@ def create_ita_verifier(
                     "RS256",
                     "RS384",
                     "RS512",
+                    "PS256",
+                    "PS384",
+                    "PS512",
                     "ES256",
                     "ES384",
                 ],
@@ -555,11 +648,8 @@ def create_ita_verifier(
                 leeway=policy.clock_skew_seconds,
             )
 
-            import os
-            import json
             if os.environ.get("ZTAB_TEST_ENVIRONMENT") == "1":
-                logger.info("  [VERBOSE] Token claims:")
-                logger.info(json.dumps(claims, indent=2))
+                _log_verbose_claims_info(claims)
 
             logger.info(
                 "  [OK] JWT signature verified "
